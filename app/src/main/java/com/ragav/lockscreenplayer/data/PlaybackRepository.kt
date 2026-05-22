@@ -34,6 +34,8 @@ data class PlaybackUiState(
     val playerCardOffsetY: Float = 0f,
     val cardCornerRadius: Float = 0.16f,
     val playerCardFrost: Float = 0.58f,
+    val showCardOnLockScreen: Boolean = true,
+    val showCardOnHomeScreen: Boolean = false,
     val textOffsetX: Float = 0f,
     val textOffsetY: Float = 0f,
     val titleTextScale: Float = 1.0f,
@@ -84,6 +86,8 @@ object PlaybackRepository {
     private const val KEY_PLAYER_CARD_OFFSET_Y = "player_card_offset_y"
     private const val KEY_CARD_RADIUS = "card_radius"
     private const val KEY_PLAYER_CARD_FROST = "player_card_frost"
+    private const val KEY_SHOW_CARD_ON_LOCK_SCREEN = "show_card_on_lock_screen"
+    private const val KEY_SHOW_CARD_ON_HOME_SCREEN = "show_card_on_home_screen"
     private const val KEY_TEXT_X = "text_x"
     private const val KEY_TEXT_Y = "text_y"
     private const val KEY_TITLE_TEXT_SCALE = "title_text_scale"
@@ -103,6 +107,7 @@ object PlaybackRepository {
     fun initialize(context: Context) {
         if (appContext != null) return
         appContext = context.applicationContext
+        ArtworkCache.initialize(context.applicationContext)
         val prefs = requirePrefs()
         mutableUiState.value = mutableUiState.value.copy(
             cardOffsetX = prefs.getFloat(KEY_CARD_X, 0f).coerceIn(CARD_X_MIN, CARD_X_MAX),
@@ -115,6 +120,8 @@ object PlaybackRepository {
             cardCornerRadius = prefs.getFloat(KEY_CARD_RADIUS, 0.16f).coerceIn(MIN_CARD_RADIUS, MAX_CARD_RADIUS),
             playerCardFrost = prefs.getFloat(KEY_PLAYER_CARD_FROST, 0.58f)
                 .coerceIn(MIN_PLAYER_CARD_FROST, MAX_PLAYER_CARD_FROST),
+            showCardOnLockScreen = prefs.getBoolean(KEY_SHOW_CARD_ON_LOCK_SCREEN, true),
+            showCardOnHomeScreen = prefs.getBoolean(KEY_SHOW_CARD_ON_HOME_SCREEN, false),
             textOffsetX = prefs.getFloat(KEY_TEXT_X, 0f).coerceIn(TEXT_X_MIN, TEXT_X_MAX),
             textOffsetY = prefs.getFloat(KEY_TEXT_Y, 0f).coerceIn(TEXT_Y_MIN, TEXT_Y_MAX),
             titleTextScale = prefs.getFloat(KEY_TITLE_TEXT_SCALE, 1.0f).coerceIn(MIN_TEXT_SCALE, MAX_TEXT_SCALE),
@@ -223,6 +230,20 @@ object PlaybackRepository {
         persistLayout()
     }
 
+    fun setShowCardOnLockScreen(enabled: Boolean) {
+        mutableUiState.update { state ->
+            state.copy(showCardOnLockScreen = enabled)
+        }
+        persistLayout()
+    }
+
+    fun setShowCardOnHomeScreen(enabled: Boolean) {
+        mutableUiState.update { state ->
+            state.copy(showCardOnHomeScreen = enabled)
+        }
+        persistLayout()
+    }
+
     fun setTitleTextScale(scale: Float) {
         mutableUiState.update { state ->
             state.copy(titleTextScale = scale.coerceIn(MIN_TEXT_SCALE, MAX_TEXT_SCALE))
@@ -275,6 +296,8 @@ object PlaybackRepository {
                 playerCardOffsetY = 0f,
                 cardCornerRadius = 0.16f,
                 playerCardFrost = 0.58f,
+                showCardOnLockScreen = true,
+                showCardOnHomeScreen = false,
                 textOffsetX = 0f,
                 textOffsetY = 0f,
                 titleTextScale = 1.0f,
@@ -315,12 +338,16 @@ object PlaybackRepository {
                     updatedArtist,
                     state.album
                 ).joinToString("|")
+                val resolvedArtwork = artwork ?: ArtworkCache.getSync(updatedSignature) ?: state.artworkBitmap
+                if (artwork != null) {
+                    ArtworkCache.storeAsync(updatedSignature, artwork)
+                }
                 state.copy(
                     title = updatedTitle,
                     artist = updatedArtist,
                     sourceApp = if (state.sourcePackage.isBlank()) readableSourceName(packageName) else state.sourceApp,
                     sourcePackage = if (state.sourcePackage.isBlank()) packageName else state.sourcePackage,
-                    artworkBitmap = artwork ?: state.artworkBitmap,
+                    artworkBitmap = resolvedArtwork,
                     trackSignature = updatedSignature,
                     marqueeStartedAtMs = if (state.trackSignature != updatedSignature || state.marqueeStartedAtMs == 0L) {
                         now
@@ -352,13 +379,17 @@ object PlaybackRepository {
         val trackTitle = description?.title?.toString().orEmpty().ifBlank { uiState.value.title }
         val trackArtist = description?.subtitle?.toString().orEmpty().ifBlank { uiState.value.artist }
         val trackAlbum = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty()
-        val artwork = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+        val metadataArtwork = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
         val position = playbackState?.position?.coerceAtLeast(0L) ?: uiState.value.positionMs
         val duration = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.coerceAtLeast(0L)
             ?: uiState.value.durationMs
         val signature = listOf(packageName, trackTitle, trackArtist, trackAlbum).joinToString("|")
+        val artwork = metadataArtwork ?: ArtworkCache.getSync(signature)
+        if (metadataArtwork != null) {
+            ArtworkCache.storeAsync(signature, metadataArtwork)
+        }
 
         mutableUiState.update { state ->
             val isPlayingNow =
@@ -385,12 +416,8 @@ object PlaybackRepository {
         }
     }
 
-    fun shouldShowCard(state: PlaybackUiState = uiState.value, nowMs: Long = SystemClock.elapsedRealtime()): Boolean {
-        if (state.isPlaying) return true
-        if (!state.hasSourceSession) return false
-        val pausedAt = state.pausedAtMs
-        if (pausedAt == 0L) return false
-        return nowMs - pausedAt < CARD_HIDE_DELAY_MS
+    fun shouldShowCard(state: PlaybackUiState = uiState.value): Boolean {
+        return state.hasSourceSession && state.isPlaying
     }
 
     private fun playbackDeviceLabel(controller: MediaController): String {
@@ -429,6 +456,8 @@ object PlaybackRepository {
             .putFloat(KEY_PLAYER_CARD_OFFSET_Y, state.playerCardOffsetY)
             .putFloat(KEY_CARD_RADIUS, state.cardCornerRadius)
             .putFloat(KEY_PLAYER_CARD_FROST, state.playerCardFrost)
+            .putBoolean(KEY_SHOW_CARD_ON_LOCK_SCREEN, state.showCardOnLockScreen)
+            .putBoolean(KEY_SHOW_CARD_ON_HOME_SCREEN, state.showCardOnHomeScreen)
             .putFloat(KEY_TEXT_X, state.textOffsetX)
             .putFloat(KEY_TEXT_Y, state.textOffsetY)
             .putFloat(KEY_TITLE_TEXT_SCALE, state.titleTextScale)

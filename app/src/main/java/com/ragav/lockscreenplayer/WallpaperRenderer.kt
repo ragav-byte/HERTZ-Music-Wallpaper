@@ -30,11 +30,11 @@ object LiveWallpaperRenderer {
         state: PlaybackUiState,
         width: Int,
         height: Int,
-        phase: Float = 0f
+        phase: Float = 0f,
+        drawCards: Boolean = true
     ): Bitmap {
         val effectiveFluidity = max(state.fluidity, 0.62f)
         val effectiveFluidScale = max(state.fluidScale, 0.82f)
-        val shouldShowCard = PlaybackRepository.shouldShowCard(state)
         val safeWidth = width.coerceAtLeast(1)
         val safeHeight = height.coerceAtLeast(1)
         val sourceArtwork = state.artworkBitmap ?: loadFallbackArtwork(context)
@@ -65,7 +65,7 @@ object LiveWallpaperRenderer {
         canvas.drawBitmap(softenedFluid, 0f, 0f, fluidPaint)
         drawShade(canvas, safeWidth, safeHeight)
 
-        if (shouldShowCard) {
+        if (drawCards) {
             val coverRect = drawArtworkCard(canvas, sourceArtwork, state, safeWidth, safeHeight)
             drawPlayerCard(canvas, state, safeWidth, safeHeight, coverRect, context, softenedFluid)
         }
@@ -281,7 +281,7 @@ object LiveWallpaperRenderer {
         val align = state.textAlignment.toPaintAlign()
 
         val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.argb(255, 16, 16, 16)
+            color = AndroidColor.argb(255, 255, 255, 255)
             textAlign = align
             textSize = width * 0.032f * state.titleTextScale
             typeface = calSans
@@ -354,7 +354,7 @@ object LiveWallpaperRenderer {
 
         val timePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.argb(230, 255, 255, 255)
-            textSize = rect.height() * 0.11f
+            textSize = rect.height() * 0.11f + 2f
             typeface = calSans
         }
         canvas.drawText(formatTime(currentPosition), left, centerY - rect.height() * 0.07f, timePaint)
@@ -490,13 +490,73 @@ fun loadFallbackArtwork(context: Context): Bitmap {
 
 private fun extractPalette(bitmap: Bitmap): List<Int> {
     val points = listOf(
-        bitmap.width * 0.22f to bitmap.height * 0.28f,
-        bitmap.width * 0.76f to bitmap.height * 0.24f,
-        bitmap.width * 0.56f to bitmap.height * 0.72f
+        bitmap.width * 0.18f to bitmap.height * 0.18f,
+        bitmap.width * 0.50f to bitmap.height * 0.18f,
+        bitmap.width * 0.82f to bitmap.height * 0.18f,
+        bitmap.width * 0.18f to bitmap.height * 0.50f,
+        bitmap.width * 0.50f to bitmap.height * 0.50f,
+        bitmap.width * 0.82f to bitmap.height * 0.50f,
+        bitmap.width * 0.18f to bitmap.height * 0.82f,
+        bitmap.width * 0.50f to bitmap.height * 0.82f,
+        bitmap.width * 0.82f to bitmap.height * 0.82f
     )
-    return points.map { (x, y) ->
+    val sampled = points.map { (x, y) ->
         sampledAverageColor(bitmap, x.toInt(), y.toInt(), max(8, min(bitmap.width, bitmap.height) / 16))
     }
+    return selectDistinctPalette(sampled)
+}
+
+private fun selectDistinctPalette(sampled: List<Int>): List<Int> {
+    if (sampled.isEmpty()) {
+        return listOf(
+            AndroidColor.argb(255, 182, 126, 126),
+            AndroidColor.argb(255, 144, 104, 176),
+            AndroidColor.argb(255, 92, 118, 164)
+        )
+    }
+
+    val ranked = sampled
+        .distinct()
+        .sortedByDescending { paletteInterest(it) }
+
+    val selected = mutableListOf<Int>()
+    ranked.firstOrNull()?.let(selected::add)
+
+    while (selected.size < 3 && ranked.isNotEmpty()) {
+        val next = ranked
+            .filterNot { it in selected }
+            .maxByOrNull { paletteInterest(it) + minColorDistance(it, selected) / 510f }
+            ?: break
+        selected += next
+    }
+
+    while (selected.size < 3) {
+        selected += selected.lastOrNull() ?: ranked.first()
+    }
+
+    return selected.take(3)
+}
+
+private fun paletteInterest(color: Int): Float {
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color, hsv)
+    val saturation = hsv[1]
+    val value = hsv[2]
+    return saturation * 1.15f + value * 0.35f
+}
+
+private fun minColorDistance(color: Int, selected: List<Int>): Float {
+    if (selected.isEmpty()) return 255f
+    return selected.minOf { selectedColor ->
+        colorDistance(color, selectedColor)
+    }
+}
+
+private fun colorDistance(first: Int, second: Int): Float {
+    val redDiff = AndroidColor.red(first) - AndroidColor.red(second)
+    val greenDiff = AndroidColor.green(first) - AndroidColor.green(second)
+    val blueDiff = AndroidColor.blue(first) - AndroidColor.blue(second)
+    return kotlin.math.sqrt((redDiff * redDiff + greenDiff * greenDiff + blueDiff * blueDiff).toDouble()).toFloat()
 }
 
 private fun sampledAverageColor(bitmap: Bitmap, centerX: Int, centerY: Int, radius: Int): Int {

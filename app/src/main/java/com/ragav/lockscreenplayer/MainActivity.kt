@@ -96,6 +96,8 @@ class MainActivity : ComponentActivity() {
                     onSetPlayerCardOffsetY = PlaybackRepository::setPlayerCardOffsetY,
                     onSetCardCornerRadius = PlaybackRepository::setCardCornerRadius,
                     onSetPlayerCardFrost = PlaybackRepository::setPlayerCardFrost,
+                    onSetShowCardOnLockScreen = PlaybackRepository::setShowCardOnLockScreen,
+                    onSetShowCardOnHomeScreen = PlaybackRepository::setShowCardOnHomeScreen,
                     onSetTitleTextScale = PlaybackRepository::setTitleTextScale,
                     onSetArtistTextScale = PlaybackRepository::setArtistTextScale,
                     onSetBlurAmount = PlaybackRepository::setBlurAmount,
@@ -233,6 +235,8 @@ private fun WallpaperStudioScreen(
     onSetPlayerCardOffsetY: (Float) -> Unit,
     onSetCardCornerRadius: (Float) -> Unit,
     onSetPlayerCardFrost: (Float) -> Unit,
+    onSetShowCardOnLockScreen: (Boolean) -> Unit,
+    onSetShowCardOnHomeScreen: (Boolean) -> Unit,
     onSetTitleTextScale: (Float) -> Unit,
     onSetArtistTextScale: (Float) -> Unit,
     onSetBlurAmount: (Float) -> Unit,
@@ -269,7 +273,7 @@ private fun WallpaperStudioScreen(
                         onClick = onEnableLiveWallpaper,
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFB8C8FF),
+                            containerColor = Color.White,
                             contentColor = Color(0xFF111111)
                         )
                     ) {
@@ -316,6 +320,25 @@ private fun WallpaperStudioScreen(
                 playbackState = playbackState,
                 onOpenSourceApp = onOpenSourceApp
             )
+
+            InfoCard(
+                title = "Surface behavior",
+                subtitle = "Choose whether the card should appear on the lock screen, home screen, or both."
+            ) {
+                SurfaceCardChoiceRow(
+                    label = "Lock screen card",
+                    enabled = playbackState.showCardOnLockScreen,
+                    onEnabledChange = onSetShowCardOnLockScreen
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                SurfaceCardChoiceRow(
+                    label = "Home screen card",
+                    enabled = playbackState.showCardOnHomeScreen,
+                    onEnabledChange = onSetShowCardOnHomeScreen
+                )
+            }
 
             InfoCard(
                 title = "Configuration",
@@ -474,7 +497,7 @@ private fun WallpaperStudioScreen(
                     onClick = onEnableLiveWallpaper,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFB8C8FF),
+                        containerColor = Color.White,
                         contentColor = Color(0xFF111111)
                     )
                 ) {
@@ -722,7 +745,7 @@ private fun CurrentPlayingCard(
                     onClick = { onOpenSourceApp(playbackState.sourcePackage) },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFB8C8FF),
+                        containerColor = Color.White,
                         contentColor = Color(0xFF111111)
                     )
                 ) {
@@ -767,7 +790,7 @@ private fun SizePresetChoice(
         Button(
             onClick = onClick,
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFFB8C8FF),
+                containerColor = Color.White,
                 contentColor = Color(0xFF111111)
             )
         ) {
@@ -826,7 +849,7 @@ private fun AlignmentChoice(
         Button(
             onClick = onClick,
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFFB8C8FF),
+                containerColor = Color.White,
                 contentColor = Color(0xFF111111)
             )
         ) {
@@ -838,6 +861,60 @@ private fun AlignmentChoice(
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
         ) {
             Text(label)
+        }
+    }
+}
+
+@Composable
+private fun SurfaceCardChoiceRow(
+    label: String,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = label,
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (enabled) {
+                Button(
+                    onClick = { onEnabledChange(true) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color(0xFF111111)
+                    )
+                ) {
+                    Text("Show")
+                }
+            } else {
+                OutlinedButton(
+                    onClick = { onEnabledChange(true) },
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
+                ) {
+                    Text("Show")
+                }
+            }
+
+            if (!enabled) {
+                Button(
+                    onClick = { onEnabledChange(false) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color(0xFF111111)
+                    )
+                ) {
+                    Text("Hide")
+                }
+            } else {
+                OutlinedButton(
+                    onClick = { onEnabledChange(false) },
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
+                ) {
+                    Text("Hide")
+                }
+            }
         }
     }
 }
@@ -867,14 +944,20 @@ private fun WallpaperPreviewCard(playbackState: PlaybackUiState) {
         playbackState.durationMs,
         playbackState.positionMs,
         playbackState.positionCapturedAtMs,
-        playbackState.trackSignature
+        playbackState.trackSignature,
+        playbackState.playerCardWidthScale,
+        playbackState.playerCardOffsetY,
+        playbackState.playerCardFrost,
+        playbackState.showCardOnLockScreen,
+        playbackState.showCardOnHomeScreen
     ) {
         LiveWallpaperRenderer.render(
             context = context,
             state = playbackState,
             width = 1080,
             height = 2340,
-            phase = if (playbackState.isPlaying) playbackState.fluidity * 4f else 0f
+            phase = if (playbackState.isPlaying) playbackState.fluidity * 4f else 0f,
+            drawCards = playbackState.showCardOnLockScreen || playbackState.showCardOnHomeScreen
         )
     }
 

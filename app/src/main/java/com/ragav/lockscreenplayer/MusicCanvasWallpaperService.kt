@@ -1,5 +1,6 @@
 package com.ragav.lockscreenplayer
 
+import android.app.KeyguardManager
 import android.service.wallpaper.WallpaperService
 import android.view.SurfaceHolder
 import com.ragav.lockscreenplayer.data.PlaybackRepository
@@ -19,6 +20,9 @@ class MusicCanvasWallpaperService : WallpaperService() {
     override fun onCreateEngine(): Engine = MusicCanvasEngine()
 
     inner class MusicCanvasEngine : Engine() {
+        private val keyguardManager by lazy {
+            getSystemService(KEYGUARD_SERVICE) as KeyguardManager
+        }
         private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         private var latestState: PlaybackUiState = PlaybackRepository.uiState.value
         private var isVisibleOnScreen = false
@@ -66,42 +70,42 @@ class MusicCanvasWallpaperService : WallpaperService() {
             animationJob?.cancel()
             if (!isVisibleOnScreen || surfaceWidth <= 0 || surfaceHeight <= 0) return
             val effectiveFluidity = maxOf(latestState.fluidity, 0.62f)
-            val shouldShowCard = PlaybackRepository.shouldShowCard(latestState)
+            val shouldShowCard = shouldDrawCardsForCurrentSurface()
 
             if (latestState.isPlaying) {
                 animationJob = engineScope.launch {
                     while (isVisibleOnScreen) {
-                        renderFrame(animationPhase)
+                        renderFrame(animationPhase, shouldDrawCardsForCurrentSurface())
                         animationPhase += 0.11f + effectiveFluidity * 0.11f
                         if (!latestState.isPlaying) break
                         delay(frameDelayMs(effectiveFluidity))
                     }
                 }
-            } else if (shouldShowCard) {
-                animationJob = engineScope.launch {
-                    renderFrame(animationPhase)
-                    val remaining = (PlaybackRepository.CARD_HIDE_DELAY_MS -
-                        (SystemClock.elapsedRealtime() - latestState.pausedAtMs)).coerceAtLeast(0L)
-                    delay(remaining)
-                    if (isVisibleOnScreen) {
-                        renderFrame(animationPhase)
-                    }
-                }
             } else {
                 animationJob = engineScope.launch {
-                    renderFrame(animationPhase)
+                    renderFrame(animationPhase, shouldShowCard)
                 }
             }
         }
 
-        private suspend fun renderFrame(phase: Float) {
+        private fun shouldDrawCardsForCurrentSurface(): Boolean {
+            if (!PlaybackRepository.shouldShowCard(latestState)) return false
+            return if (keyguardManager.isKeyguardLocked) {
+                latestState.showCardOnLockScreen
+            } else {
+                latestState.showCardOnHomeScreen
+            }
+        }
+
+        private suspend fun renderFrame(phase: Float, drawCards: Boolean) {
             val wallpaperBitmap = withContext(Dispatchers.Default) {
                 LiveWallpaperRenderer.render(
                     context = this@MusicCanvasWallpaperService,
                     state = latestState,
                     width = surfaceWidth,
                     height = surfaceHeight,
-                    phase = phase
+                    phase = phase,
+                    drawCards = drawCards
                 )
             }
 
