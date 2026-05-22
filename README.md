@@ -37,3 +37,4 @@ APK path after build:
 - Muse is currently being tested before a broader release.
 - It will be released to the app store shortly after final testing is complete.
 - Some Android phones allow lock-screen-only live wallpapers, while others apply the wallpaper to both home and lock screen.
+- For better experience turn off media player in your lockscreen
