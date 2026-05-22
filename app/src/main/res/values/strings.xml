@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Muse</string>
+    <string name="notification_listener_label">Mirror active media sessions</string>
+    <string name="live_wallpaper_label">Muse Wallpaper</string>
+    <string name="live_wallpaper_description">A fluid wallpaper that diffuses colors from your music artwork and freezes when playback pauses.</string>
+</resources>
