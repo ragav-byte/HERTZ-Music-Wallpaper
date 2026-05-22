@@ -93,6 +93,7 @@ class MainActivity : ComponentActivity() {
                     onSetCardOffset = PlaybackRepository::setCardOffset,
                     onSetCardScale = PlaybackRepository::setCardScale,
                     onSetPlayerCardWidthScale = PlaybackRepository::setPlayerCardWidthScale,
+                    onSetPlayerCardOffsetY = PlaybackRepository::setPlayerCardOffsetY,
                     onSetCardCornerRadius = PlaybackRepository::setCardCornerRadius,
                     onSetPlayerCardFrost = PlaybackRepository::setPlayerCardFrost,
                     onSetTitleTextScale = PlaybackRepository::setTitleTextScale,
@@ -229,6 +230,7 @@ private fun WallpaperStudioScreen(
     onSetCardOffset: (Float, Float) -> Unit,
     onSetCardScale: (Float) -> Unit,
     onSetPlayerCardWidthScale: (Float) -> Unit,
+    onSetPlayerCardOffsetY: (Float) -> Unit,
     onSetCardCornerRadius: (Float) -> Unit,
     onSetPlayerCardFrost: (Float) -> Unit,
     onSetTitleTextScale: (Float) -> Unit,
@@ -359,6 +361,17 @@ private fun WallpaperStudioScreen(
                     value = playbackState.playerCardWidthScale,
                     onValueChange = onSetPlayerCardWidthScale,
                     valueRange = 0.56f..0.96f
+                )
+
+                Text(
+                    text = "Text card Y ${(playbackState.playerCardOffsetY * 100).toInt()}%",
+                    color = Color(0xFFE8E8F0),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                AppSlider(
+                    value = playbackState.playerCardOffsetY,
+                    onValueChange = onSetPlayerCardOffsetY,
+                    valueRange = -1.0f..2.4f
                 )
 
                 Text(

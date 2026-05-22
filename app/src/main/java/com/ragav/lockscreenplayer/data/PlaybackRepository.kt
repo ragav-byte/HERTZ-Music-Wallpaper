@@ -31,6 +31,7 @@ data class PlaybackUiState(
     val cardOffsetY: Float = 0f,
     val cardScale: Float = 0.56f,
     val playerCardWidthScale: Float = 0.84f,
+    val playerCardOffsetY: Float = 0f,
     val cardCornerRadius: Float = 0.16f,
     val playerCardFrost: Float = 0.58f,
     val textOffsetX: Float = 0f,
@@ -41,7 +42,8 @@ data class PlaybackUiState(
     val fluidScale: Float = 0.82f,
     val fluidity: Float = 0.62f,
     val textAlignment: TextAlignmentOption = TextAlignmentOption.CENTER,
-    val trackSignature: String = ""
+    val trackSignature: String = "",
+    val marqueeStartedAtMs: Long = 0L
 )
 
 enum class TextAlignmentOption {
@@ -58,6 +60,8 @@ object PlaybackRepository {
     private const val MAX_CARD_SCALE = 0.88f
     private const val MIN_PLAYER_CARD_WIDTH = 0.56f
     private const val MAX_PLAYER_CARD_WIDTH = 0.96f
+    private const val MIN_PLAYER_CARD_OFFSET_Y = -1.0f
+    private const val MAX_PLAYER_CARD_OFFSET_Y = 2.4f
     private const val MIN_CARD_RADIUS = 0f
     private const val MAX_CARD_RADIUS = 0.30f
     private const val MIN_PLAYER_CARD_FROST = 0.15f
@@ -77,6 +81,7 @@ object PlaybackRepository {
     private const val KEY_CARD_Y = "card_y"
     private const val KEY_CARD_SCALE = "card_scale"
     private const val KEY_PLAYER_CARD_WIDTH = "player_card_width"
+    private const val KEY_PLAYER_CARD_OFFSET_Y = "player_card_offset_y"
     private const val KEY_CARD_RADIUS = "card_radius"
     private const val KEY_PLAYER_CARD_FROST = "player_card_frost"
     private const val KEY_TEXT_X = "text_x"
@@ -105,6 +110,8 @@ object PlaybackRepository {
             cardScale = prefs.getFloat(KEY_CARD_SCALE, 0.56f).coerceIn(MIN_CARD_SCALE, MAX_CARD_SCALE),
             playerCardWidthScale = prefs.getFloat(KEY_PLAYER_CARD_WIDTH, 0.84f)
                 .coerceIn(MIN_PLAYER_CARD_WIDTH, MAX_PLAYER_CARD_WIDTH),
+            playerCardOffsetY = prefs.getFloat(KEY_PLAYER_CARD_OFFSET_Y, 0f)
+                .coerceIn(MIN_PLAYER_CARD_OFFSET_Y, MAX_PLAYER_CARD_OFFSET_Y),
             cardCornerRadius = prefs.getFloat(KEY_CARD_RADIUS, 0.16f).coerceIn(MIN_CARD_RADIUS, MAX_CARD_RADIUS),
             playerCardFrost = prefs.getFloat(KEY_PLAYER_CARD_FROST, 0.58f)
                 .coerceIn(MIN_PLAYER_CARD_FROST, MAX_PLAYER_CARD_FROST),
@@ -195,6 +202,13 @@ object PlaybackRepository {
         persistLayout()
     }
 
+    fun setPlayerCardOffsetY(offsetY: Float) {
+        mutableUiState.update { state ->
+            state.copy(playerCardOffsetY = offsetY.coerceIn(MIN_PLAYER_CARD_OFFSET_Y, MAX_PLAYER_CARD_OFFSET_Y))
+        }
+        persistLayout()
+    }
+
     fun setCardCornerRadius(radius: Float) {
         mutableUiState.update { state ->
             state.copy(cardCornerRadius = radius.coerceIn(MIN_CARD_RADIUS, MAX_CARD_RADIUS))
@@ -258,6 +272,7 @@ object PlaybackRepository {
                 cardOffsetY = 0f,
                 cardScale = 0.56f,
                 playerCardWidthScale = 0.84f,
+                playerCardOffsetY = 0f,
                 cardCornerRadius = 0.16f,
                 playerCardFrost = 0.58f,
                 textOffsetX = 0f,
@@ -287,24 +302,31 @@ object PlaybackRepository {
             val shouldAccept = state.sourcePackage.isBlank() ||
                 state.sourcePackage == packageName ||
                 packageName == APPLE_MUSIC_PACKAGE
+            val now = SystemClock.elapsedRealtime()
 
             if (!shouldAccept) {
                 state
             } else {
                 val updatedTitle = cleanTitle.ifBlank { state.title }
                 val updatedArtist = cleanArtist.ifBlank { state.artist }
+                val updatedSignature = listOf(
+                    if (state.sourcePackage.isBlank()) packageName else state.sourcePackage,
+                    updatedTitle,
+                    updatedArtist,
+                    state.album
+                ).joinToString("|")
                 state.copy(
                     title = updatedTitle,
                     artist = updatedArtist,
                     sourceApp = if (state.sourcePackage.isBlank()) readableSourceName(packageName) else state.sourceApp,
                     sourcePackage = if (state.sourcePackage.isBlank()) packageName else state.sourcePackage,
                     artworkBitmap = artwork ?: state.artworkBitmap,
-                    trackSignature = listOf(
-                        if (state.sourcePackage.isBlank()) packageName else state.sourcePackage,
-                        updatedTitle,
-                        updatedArtist,
-                        state.album
-                    ).joinToString("|")
+                    trackSignature = updatedSignature,
+                    marqueeStartedAtMs = if (state.trackSignature != updatedSignature || state.marqueeStartedAtMs == 0L) {
+                        now
+                    } else {
+                        state.marqueeStartedAtMs
+                    }
                 )
             }
         }
@@ -341,6 +363,8 @@ object PlaybackRepository {
         mutableUiState.update { state ->
             val isPlayingNow =
                 playbackStateCode == PlaybackState.STATE_PLAYING || playbackStateCode == PlaybackState.STATE_BUFFERING
+            val now = SystemClock.elapsedRealtime()
+            val signatureChanged = state.trackSignature != signature
             state.copy(
                 title = trackTitle,
                 artist = trackArtist,
@@ -351,11 +375,12 @@ object PlaybackRepository {
                 artworkBitmap = artwork ?: state.artworkBitmap,
                 hasSourceSession = true,
                 isPlaying = isPlayingNow,
-                pausedAtMs = if (isPlayingNow) 0L else if (state.pausedAtMs == 0L) SystemClock.elapsedRealtime() else state.pausedAtMs,
+                pausedAtMs = if (isPlayingNow) 0L else if (state.pausedAtMs == 0L) now else state.pausedAtMs,
                 durationMs = duration,
                 positionMs = position,
-                positionCapturedAtMs = SystemClock.elapsedRealtime(),
-                trackSignature = signature
+                positionCapturedAtMs = now,
+                trackSignature = signature,
+                marqueeStartedAtMs = if (signatureChanged || state.marqueeStartedAtMs == 0L) now else state.marqueeStartedAtMs
             )
         }
     }
@@ -401,6 +426,7 @@ object PlaybackRepository {
             .putFloat(KEY_CARD_Y, state.cardOffsetY)
             .putFloat(KEY_CARD_SCALE, state.cardScale)
             .putFloat(KEY_PLAYER_CARD_WIDTH, state.playerCardWidthScale)
+            .putFloat(KEY_PLAYER_CARD_OFFSET_Y, state.playerCardOffsetY)
             .putFloat(KEY_CARD_RADIUS, state.cardCornerRadius)
             .putFloat(KEY_PLAYER_CARD_FROST, state.playerCardFrost)
             .putFloat(KEY_TEXT_X, state.textOffsetX)

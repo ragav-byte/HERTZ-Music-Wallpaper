@@ -67,7 +67,7 @@ object LiveWallpaperRenderer {
 
         if (shouldShowCard) {
             val coverRect = drawArtworkCard(canvas, sourceArtwork, state, safeWidth, safeHeight)
-            drawPlayerCard(canvas, state, safeWidth, safeHeight, coverRect, context, phase, softenedFluid)
+            drawPlayerCard(canvas, state, safeWidth, safeHeight, coverRect, context, softenedFluid)
         }
 
         return output
@@ -216,7 +216,6 @@ object LiveWallpaperRenderer {
         height: Int,
         coverRect: RectF,
         context: Context,
-        phase: Float,
         backdropBitmap: Bitmap
     ) {
         val panelWidth = (width * state.playerCardWidthScale)
@@ -225,7 +224,8 @@ object LiveWallpaperRenderer {
         val panelLeft = ((width - panelWidth) / 2f + width * 0.22f * state.cardOffsetX)
             .coerceIn(width * 0.04f, width - panelWidth - width * 0.04f)
         val defaultTop = coverRect.bottom + height * 0.028f
-        val panelTop = defaultTop.coerceAtMost(height - panelHeight - height * 0.05f)
+        val panelTop = (defaultTop + height * 0.10f * state.playerCardOffsetY)
+            .coerceIn(height * 0.04f, height - panelHeight - height * 0.05f)
         val rect = RectF(panelLeft, panelTop, panelLeft + panelWidth, panelTop + panelHeight)
         val radius = min(panelHeight * (0.20f + state.cardCornerRadius * 0.7f), 58f)
         val calSans = ResourcesCompat.getFont(context, R.font.calsans_regular)
@@ -300,8 +300,9 @@ object LiveWallpaperRenderer {
             left = contentLeft,
             right = contentRight,
             baselineY = titleY,
-            phase = phase,
             isPlaying = state.isPlaying,
+            pausedAtMs = state.pausedAtMs,
+            marqueeStartedAtMs = state.marqueeStartedAtMs,
             maxCharactersBeforeMarquee = 29
         )
         drawAnimatedText(
@@ -311,8 +312,9 @@ object LiveWallpaperRenderer {
             left = contentLeft,
             right = contentRight,
             baselineY = artistY,
-            phase = phase + 1.3f,
             isPlaying = state.isPlaying,
+            pausedAtMs = state.pausedAtMs,
+            marqueeStartedAtMs = state.marqueeStartedAtMs,
             maxCharactersBeforeMarquee = 29
         )
 
@@ -369,8 +371,9 @@ private fun drawAnimatedText(
     left: Float,
     right: Float,
     baselineY: Float,
-    phase: Float,
     isPlaying: Boolean,
+    pausedAtMs: Long,
+    marqueeStartedAtMs: Long,
     maxCharactersBeforeMarquee: Int
 ) {
     val availableWidth = (right - left).coerceAtLeast(1f)
@@ -395,11 +398,21 @@ private fun drawAnimatedText(
     val spacing = paint.textSize * 1.8f
     val textWidth = paint.measureText(trimmed)
     val loopWidth = textWidth + spacing
-    val scroll = if (isPlaying) {
-        val pixelsPerSecond = paint.textSize * 1.45f
-        ((SystemClock.elapsedRealtime() / 1000f) * pixelsPerSecond) % loopWidth
-    } else {
+    val holdMs = 2000f
+    val pixelsPerSecond = paint.textSize * 0.92f
+    val scrollDurationMs = ((loopWidth / pixelsPerSecond) * 1000f).coerceAtLeast(1f)
+    val cycleMs = holdMs + scrollDurationMs
+    val motionClockMs = when {
+        isPlaying -> SystemClock.elapsedRealtime().toFloat()
+        pausedAtMs > 0L -> pausedAtMs.toFloat()
+        else -> SystemClock.elapsedRealtime().toFloat()
+    }
+    val startMs = marqueeStartedAtMs.takeIf { it > 0L }?.toFloat() ?: motionClockMs
+    val cyclePositionMs = ((motionClockMs - startMs).coerceAtLeast(0f)) % cycleMs
+    val scroll = if (cyclePositionMs < holdMs) {
         0f
+    } else {
+        ((cyclePositionMs - holdMs) / scrollDurationMs) * loopWidth
     }
 
     canvas.save()
