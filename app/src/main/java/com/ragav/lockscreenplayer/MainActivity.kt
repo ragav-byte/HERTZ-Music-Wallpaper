@@ -14,6 +14,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -39,16 +41,18 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderState
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,14 +62,26 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ragav.lockscreenplayer.data.PlaybackRepository
 import com.ragav.lockscreenplayer.data.PlaybackUiState
 import com.ragav.lockscreenplayer.data.TextAlignmentOption
 import com.ragav.lockscreenplayer.ui.theme.LockscreenPlayerTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+private enum class WallpaperApplyTarget {
+    LOCK_SCREEN,
+    HOME_SCREEN,
+    BOTH
+}
 
 class MainActivity : ComponentActivity() {
     private var hasNotificationListenerAccess by mutableStateOf(false)
@@ -87,7 +103,7 @@ class MainActivity : ComponentActivity() {
                     statusMessage = statusMessage,
                     onOpenListenerSettings = ::openListenerSettings,
                     onOpenAppSettings = ::openAppSettings,
-                    onEnableLiveWallpaper = ::enableLiveWallpaper,
+                    onApplyWallpaperChoice = ::applyWallpaperChoice,
                     onOpenSourceApp = ::openSourceApp,
                     onOpenSupportEmail = ::openSupportEmail,
                     onSetCardOffset = PlaybackRepository::setCardOffset,
@@ -96,11 +112,11 @@ class MainActivity : ComponentActivity() {
                     onSetPlayerCardOffsetY = PlaybackRepository::setPlayerCardOffsetY,
                     onSetCardCornerRadius = PlaybackRepository::setCardCornerRadius,
                     onSetPlayerCardFrost = PlaybackRepository::setPlayerCardFrost,
-                    onSetShowCardOnLockScreen = PlaybackRepository::setShowCardOnLockScreen,
-                    onSetShowCardOnHomeScreen = PlaybackRepository::setShowCardOnHomeScreen,
                     onSetTitleTextScale = PlaybackRepository::setTitleTextScale,
                     onSetArtistTextScale = PlaybackRepository::setArtistTextScale,
                     onSetBlurAmount = PlaybackRepository::setBlurAmount,
+                    onSetGradientBrightness = PlaybackRepository::setGradientBrightness,
+                    onSetPreserveArtworkOnReboot = PlaybackRepository::setPreserveArtworkOnReboot,
                     onSetTextAlignment = PlaybackRepository::setTextAlignment,
                     onResetLayout = PlaybackRepository::resetLayout
                 )
@@ -175,6 +191,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun applyWallpaperChoice(showCard: Boolean, target: WallpaperApplyTarget) {
+        when (target) {
+            WallpaperApplyTarget.LOCK_SCREEN -> {
+                PlaybackRepository.setShowCardOnLockScreen(showCard)
+            }
+            WallpaperApplyTarget.HOME_SCREEN -> {
+                PlaybackRepository.setShowCardOnHomeScreen(showCard)
+            }
+            WallpaperApplyTarget.BOTH -> {
+                PlaybackRepository.setShowCardOnLockScreen(showCard)
+                PlaybackRepository.setShowCardOnHomeScreen(showCard)
+            }
+        }
+        enableLiveWallpaper()
+    }
+
     private fun openSourceApp(packageName: String) {
         val targetPackage = packageName.ifBlank { "com.apple.android.music" }
         val launchIntent = packageManager.getLaunchIntentForPackage(targetPackage)
@@ -226,7 +258,7 @@ private fun WallpaperStudioScreen(
     statusMessage: String,
     onOpenListenerSettings: () -> Unit,
     onOpenAppSettings: () -> Unit,
-    onEnableLiveWallpaper: () -> Unit,
+    onApplyWallpaperChoice: (Boolean, WallpaperApplyTarget) -> Unit,
     onOpenSourceApp: (String) -> Unit,
     onOpenSupportEmail: () -> Unit,
     onSetCardOffset: (Float, Float) -> Unit,
@@ -235,14 +267,16 @@ private fun WallpaperStudioScreen(
     onSetPlayerCardOffsetY: (Float) -> Unit,
     onSetCardCornerRadius: (Float) -> Unit,
     onSetPlayerCardFrost: (Float) -> Unit,
-    onSetShowCardOnLockScreen: (Boolean) -> Unit,
-    onSetShowCardOnHomeScreen: (Boolean) -> Unit,
     onSetTitleTextScale: (Float) -> Unit,
     onSetArtistTextScale: (Float) -> Unit,
     onSetBlurAmount: (Float) -> Unit,
+    onSetGradientBrightness: (Float) -> Unit,
+    onSetPreserveArtworkOnReboot: (Boolean) -> Unit,
     onSetTextAlignment: (TextAlignmentOption) -> Unit,
     onResetLayout: () -> Unit
 ) {
+    var showApplyChooser by androidx.compose.runtime.remember { mutableStateOf(false) }
+
     Box(modifier = Modifier.fillMaxSize()) {
         ArtworkBackdrop(artworkBitmap = null)
 
@@ -255,7 +289,7 @@ private fun WallpaperStudioScreen(
         ) {
             HeroCard(
                 title = "HERTZ",
-                subtitle = "MUSIC WALLPAPER"
+                subtitle = "Your Music Wallpaper"
             )
 
             StatusCard(statusMessage = statusMessage)
@@ -270,7 +304,7 @@ private fun WallpaperStudioScreen(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(
-                        onClick = onEnableLiveWallpaper,
+                        onClick = { showApplyChooser = true },
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color.White,
@@ -283,7 +317,7 @@ private fun WallpaperStudioScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Set wallpaper")
+                        ButtonLabel("Apply wallpaper")
                     }
 
                     OutlinedButton(
@@ -297,7 +331,7 @@ private fun WallpaperStudioScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(if (hasNotificationListenerAccess) "Manage media access" else "Enable media access")
+                        ButtonLabel(if (hasNotificationListenerAccess) "Manage media access" else "Enable media access")
                     }
 
                     OutlinedButton(
@@ -311,7 +345,7 @@ private fun WallpaperStudioScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("App settings")
+                        ButtonLabel("App settings")
                     }
                 }
             }
@@ -320,25 +354,6 @@ private fun WallpaperStudioScreen(
                 playbackState = playbackState,
                 onOpenSourceApp = onOpenSourceApp
             )
-
-            InfoCard(
-                title = "Surface behavior",
-                subtitle = "Choose whether the card should appear on the lock screen, home screen, or both."
-            ) {
-                SurfaceCardChoiceRow(
-                    label = "Lock screen card",
-                    enabled = playbackState.showCardOnLockScreen,
-                    onEnabledChange = onSetShowCardOnLockScreen
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                SurfaceCardChoiceRow(
-                    label = "Home screen card",
-                    enabled = playbackState.showCardOnHomeScreen,
-                    onEnabledChange = onSetShowCardOnHomeScreen
-                )
-            }
 
             InfoCard(
                 title = "Configuration",
@@ -451,6 +466,29 @@ private fun WallpaperStudioScreen(
                 )
 
                 Text(
+                    text = "Gradient brightness ${(playbackState.gradientBrightness * 100).toInt()}%",
+                    color = Color(0xFFE8E8F0),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                AppSlider(
+                    value = playbackState.gradientBrightness,
+                    onValueChange = onSetGradientBrightness,
+                    valueRange = 0.65f..1.65f
+                )
+
+                Text(
+                    text = "Preserve album art for the next reboot",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                BooleanChoiceRow(
+                    enabled = playbackState.preserveArtworkOnReboot,
+                    enabledLabel = "On",
+                    disabledLabel = "Off",
+                    onEnabledChange = onSetPreserveArtworkOnReboot
+                )
+
+                Text(
                     text = "Text alignment",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium
@@ -483,7 +521,7 @@ private fun WallpaperStudioScreen(
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Reset layout")
+                    ButtonLabel("Reset layout")
                 }
             }
 
@@ -491,10 +529,10 @@ private fun WallpaperStudioScreen(
 
             InfoCard(
                 title = "Live wallpaper",
-                subtitle = "Set it once from the wallpaper picker. After that, HERTZ updates when the song or layout changes."
+                subtitle = "Use apply wallpaper whenever you want to choose a card or no-card version for lock screen, home screen, or both."
             ) {
                 Button(
-                    onClick = onEnableLiveWallpaper,
+                    onClick = { showApplyChooser = true },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color.White,
@@ -506,9 +544,9 @@ private fun WallpaperStudioScreen(
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Open wallpaper picker")
-                }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        ButtonLabel("Apply wallpaper")
+                    }
 
                 Spacer(modifier = Modifier.height(10.dp))
 
@@ -528,7 +566,7 @@ private fun WallpaperStudioScreen(
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
                 ) {
-                    Text("Email support")
+                    ButtonLabel("Email support")
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -539,6 +577,17 @@ private fun WallpaperStudioScreen(
                     style = MaterialTheme.typography.bodySmall
                 )
             }
+        }
+
+        if (showApplyChooser) {
+            ApplyWallpaperDialog(
+                playbackState = playbackState,
+                onDismiss = { showApplyChooser = false },
+                onApply = { showCard, target ->
+                    showApplyChooser = false
+                    onApplyWallpaperChoice(showCard, target)
+                }
+            )
         }
     }
 }
@@ -576,6 +625,7 @@ private fun AbsoluteOffsetControls(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AppSlider(
     value: Float,
@@ -586,14 +636,63 @@ private fun AppSlider(
         value = value,
         onValueChange = onValueChange,
         valueRange = valueRange,
+        thumb = { SliderHandle() },
+        track = { sliderState -> SliderTrack(sliderState) },
         colors = SliderDefaults.colors(
-            thumbColor = Color.White,
-            activeTrackColor = Color.White,
-            inactiveTrackColor = Color.White.copy(alpha = 0.6f),
-            activeTickColor = Color.White,
-            inactiveTickColor = Color.White.copy(alpha = 0.6f)
+            thumbColor = Color.Transparent,
+            activeTrackColor = Color.Transparent,
+            inactiveTrackColor = Color.Transparent,
+            activeTickColor = Color.Transparent,
+            inactiveTickColor = Color.Transparent
         )
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SliderTrack(sliderState: SliderState) {
+    val fraction = (
+        (sliderState.value - sliderState.valueRange.start) /
+            (sliderState.valueRange.endInclusive - sliderState.valueRange.start)
+        ).coerceIn(0f, 1f)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(38.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(16.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(Color.White.copy(alpha = 0.22f))
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(fraction)
+                .height(16.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(Color.White)
+        )
+    }
+}
+
+@Composable
+private fun SliderHandle() {
+    Box(
+        modifier = Modifier.size(width = 28.dp, height = 42.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .width(8.dp)
+                .height(42.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(Color.White)
+        )
+    }
 }
 
 @Composable
@@ -677,6 +776,7 @@ private fun StatusCard(statusMessage: String) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CurrentPlayingCard(
     playbackState: PlaybackUiState,
@@ -685,7 +785,7 @@ private fun CurrentPlayingCard(
     InfoCard(
         title = "Current playing",
         subtitle = if (playbackState.hasSourceSession) {
-            "Colors and motion are pulled from the current cover art."
+            "Colors are pulled from the current cover art."
         } else {
             "Start Apple Music and the artwork will appear here."
         }
@@ -718,27 +818,53 @@ private fun CurrentPlayingCard(
 
             Column(
                 modifier = Modifier.weight(0.58f),
+                horizontalAlignment = Alignment.Start,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = playbackState.title.uppercase(),
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontSize = 21.sp * playbackState.titleTextScale
-                    )
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = playbackState.title.uppercase(),
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontSize = 13.sp * playbackState.titleTextScale
+                            ),
+                            textAlign = TextAlign.Left,
+                            maxLines = 1,
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .basicMarquee(iterations = Int.MAX_VALUE)
+                        )
+                    }
+                    if (playbackState.isExplicit) {
+                        ExplicitBadge()
+                    }
+                }
                 Text(
                     text = playbackState.artist,
                     color = Color.White.copy(alpha = 0.7f),
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.SemiBold,
-                        fontSize = 18.sp * playbackState.artistTextScale
-                    )
+                        fontSize = 11.sp * playbackState.artistTextScale
+                    ),
+                    textAlign = TextAlign.Left,
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .basicMarquee(iterations = Int.MAX_VALUE)
                 )
                 Text(
                     text = displayPlaybackPosition(playbackState),
                     color = Color(0xFFE7E5F4),
-                    style = MaterialTheme.typography.bodyLarge
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
+                    textAlign = TextAlign.Left,
+                    modifier = Modifier.fillMaxWidth()
                 )
 
                 Button(
@@ -749,10 +875,31 @@ private fun CurrentPlayingCard(
                         contentColor = Color(0xFF111111)
                     )
                 ) {
-                    Text("Open music application")
+                    ButtonLabel(
+                        text = "Open music application",
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ExplicitBadge() {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(Color.White.copy(alpha = 0.16f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "E",
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+        )
     }
 }
 
@@ -866,63 +1013,10 @@ private fun AlignmentChoice(
 }
 
 @Composable
-private fun SurfaceCardChoiceRow(
-    label: String,
-    enabled: Boolean,
-    onEnabledChange: (Boolean) -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            text = label,
-            color = Color.White,
-            style = MaterialTheme.typography.titleMedium
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (enabled) {
-                Button(
-                    onClick = { onEnabledChange(true) },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White,
-                        contentColor = Color(0xFF111111)
-                    )
-                ) {
-                    Text("Show")
-                }
-            } else {
-                OutlinedButton(
-                    onClick = { onEnabledChange(true) },
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
-                ) {
-                    Text("Show")
-                }
-            }
-
-            if (!enabled) {
-                Button(
-                    onClick = { onEnabledChange(false) },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White,
-                        contentColor = Color(0xFF111111)
-                    )
-                ) {
-                    Text("Hide")
-                }
-            } else {
-                OutlinedButton(
-                    onClick = { onEnabledChange(false) },
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
-                ) {
-                    Text("Hide")
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun WallpaperPreviewCard(playbackState: PlaybackUiState) {
     val context = LocalContext.current
-    val previewBitmap = remember(
+    val previewBitmap by produceState<Bitmap?>(
+        initialValue = null,
         playbackState.title,
         playbackState.artist,
         playbackState.album,
@@ -937,6 +1031,7 @@ private fun WallpaperPreviewCard(playbackState: PlaybackUiState) {
         playbackState.titleTextScale,
         playbackState.artistTextScale,
         playbackState.blurAmount,
+        playbackState.gradientBrightness,
         playbackState.fluidScale,
         playbackState.textAlignment,
         playbackState.fluidity,
@@ -951,14 +1046,16 @@ private fun WallpaperPreviewCard(playbackState: PlaybackUiState) {
         playbackState.showCardOnLockScreen,
         playbackState.showCardOnHomeScreen
     ) {
-        LiveWallpaperRenderer.render(
-            context = context,
-            state = playbackState,
-            width = 1080,
-            height = 2340,
-            phase = if (playbackState.isPlaying) playbackState.fluidity * 4f else 0f,
-            drawCards = playbackState.showCardOnLockScreen || playbackState.showCardOnHomeScreen
-        )
+        value = withContext(Dispatchers.Default) {
+            LiveWallpaperRenderer.render(
+                context = context,
+                state = playbackState,
+                width = 540,
+                height = 1170,
+                phase = if (playbackState.isPlaying) playbackState.fluidity * 4f else 0f,
+                drawCards = playbackState.showCardOnLockScreen || playbackState.showCardOnHomeScreen
+            )
+        }
     }
 
     Card(
@@ -993,12 +1090,14 @@ private fun WallpaperPreviewCard(playbackState: PlaybackUiState) {
                         .background(Color(0xFF020202))
                         .padding(8.dp)
                 ) {
-                    Image(
-                        bitmap = previewBitmap.asImageBitmap(),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    if (previewBitmap != null) {
+                        Image(
+                            bitmap = previewBitmap!!.asImageBitmap(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
 
@@ -1013,10 +1112,264 @@ private fun WallpaperPreviewCard(playbackState: PlaybackUiState) {
     }
 }
 
+@Composable
+private fun BooleanChoiceRow(
+    enabled: Boolean,
+    enabledLabel: String,
+    disabledLabel: String,
+    onEnabledChange: (Boolean) -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (enabled) {
+            Button(
+                onClick = { onEnabledChange(true) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color(0xFF111111)
+                )
+            ) {
+                ButtonLabel(enabledLabel)
+            }
+        } else {
+            OutlinedButton(
+                onClick = { onEnabledChange(true) },
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
+            ) {
+                ButtonLabel(enabledLabel)
+            }
+        }
+
+        if (!enabled) {
+            Button(
+                onClick = { onEnabledChange(false) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color(0xFF111111)
+                )
+            ) {
+                ButtonLabel(disabledLabel)
+            }
+        } else {
+            OutlinedButton(
+                onClick = { onEnabledChange(false) },
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
+            ) {
+                ButtonLabel(disabledLabel)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApplyWallpaperDialog(
+    playbackState: PlaybackUiState,
+    onDismiss: () -> Unit,
+    onApply: (Boolean, WallpaperApplyTarget) -> Unit
+) {
+    var showCard by androidx.compose.runtime.remember { mutableStateOf(true) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0x66FFFFFF), RoundedCornerShape(28.dp)),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xF0101012))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = "Apply wallpaper",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Text(
+                    text = "Pick whether this applied version should include the music card or keep only the fluid gradient background.",
+                    color = Color(0xFFD2D1DB),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    WallpaperModeCard(
+                        modifier = Modifier.weight(1f),
+                        playbackState = playbackState,
+                        showCard = true,
+                        selected = showCard,
+                        title = "With card",
+                        subtitle = "Gradient plus the artwork and text card.",
+                        onClick = { showCard = true }
+                    )
+                    WallpaperModeCard(
+                        modifier = Modifier.weight(1f),
+                        playbackState = playbackState,
+                        showCard = false,
+                        selected = !showCard,
+                        title = "No card",
+                        subtitle = "Gradient only for a cleaner home screen.",
+                        onClick = { showCard = false }
+                    )
+                }
+
+                Text(
+                    text = "Apply this version to",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                Button(
+                    onClick = { onApply(showCard, WallpaperApplyTarget.LOCK_SCREEN) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color(0xFF111111)
+                    )
+                ) {
+                    ButtonLabel("Lock screen")
+                }
+
+                Button(
+                    onClick = { onApply(showCard, WallpaperApplyTarget.HOME_SCREEN) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color(0xFF111111)
+                    )
+                ) {
+                    ButtonLabel("Home screen")
+                }
+
+                Button(
+                    onClick = { onApply(showCard, WallpaperApplyTarget.BOTH) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color(0xFF111111)
+                    )
+                ) {
+                    ButtonLabel("Both")
+                }
+
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
+                ) {
+                    ButtonLabel("Cancel")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WallpaperModeCard(
+    modifier: Modifier = Modifier,
+    playbackState: PlaybackUiState,
+    showCard: Boolean,
+    selected: Boolean,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    val context = LocalContext.current
+    val previewBitmap by produceState<Bitmap?>(
+        initialValue = null,
+        playbackState.trackSignature,
+        playbackState.artworkBitmap,
+        playbackState.cardOffsetX,
+        playbackState.cardOffsetY,
+        playbackState.cardScale,
+        playbackState.cardCornerRadius,
+        playbackState.playerCardWidthScale,
+        playbackState.playerCardOffsetY,
+        playbackState.playerCardFrost,
+        playbackState.titleTextScale,
+        playbackState.artistTextScale,
+        playbackState.blurAmount,
+        playbackState.gradientBrightness,
+        playbackState.fluidity,
+        showCard
+    ) {
+        value = withContext(Dispatchers.Default) {
+            LiveWallpaperRenderer.render(
+                context = context,
+                state = playbackState,
+                width = 240,
+                height = 520,
+                phase = if (playbackState.isPlaying) playbackState.fluidity * 3f else 0f,
+                drawCards = showCard
+            )
+        }
+    }
+
+    val borderColor = if (selected) Color.White else Color(0x44FFFFFF)
+    val containerColor = if (selected) Color(0x26FFFFFF) else Color(0x16000000)
+
+    Card(
+        modifier = modifier
+            .border(1.dp, borderColor, RoundedCornerShape(20.dp)),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        onClick = onClick
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(0.46f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xFF08080A))
+            ) {
+                if (previewBitmap != null) {
+                    Image(
+                        bitmap = previewBitmap!!.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+            Text(
+                text = title,
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                text = subtitle,
+                color = Color(0xFFD2D1DB),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}
+
+@Composable
+private fun ButtonLabel(
+    text: String,
+    modifier: Modifier = Modifier,
+    textAlign: TextAlign = TextAlign.Start
+) {
+    Text(
+        text = text,
+        modifier = modifier,
+        textAlign = textAlign,
+        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+    )
+}
+
 private fun displayPlaybackPosition(playbackState: PlaybackUiState): String {
     val effectiveDuration = playbackState.durationMs.coerceAtLeast(0L)
     val elapsed = if (playbackState.isPlaying) {
-        (SystemClock.elapsedRealtime() - playbackState.positionCapturedAtMs).coerceAtLeast(0L)
+        ((SystemClock.elapsedRealtime() - playbackState.positionCapturedAtMs).coerceAtLeast(0L) * playbackState.playbackSpeed).toLong()
     } else {
         0L
     }

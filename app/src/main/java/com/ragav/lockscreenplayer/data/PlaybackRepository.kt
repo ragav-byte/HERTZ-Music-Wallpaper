@@ -6,12 +6,14 @@ import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.Build
+import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlin.math.abs
 
 data class PlaybackUiState(
     val title: String = "Start Apple Music",
@@ -20,9 +22,11 @@ data class PlaybackUiState(
     val sourceApp: String = "No player detected",
     val sourcePackage: String = "",
     val playbackDeviceLabel: String = "This device",
+    val isExplicit: Boolean = false,
     val artworkBitmap: Bitmap? = null,
     val hasSourceSession: Boolean = false,
     val isPlaying: Boolean = false,
+    val playbackSpeed: Float = 0f,
     val pausedAtMs: Long = 0L,
     val durationMs: Long = 0L,
     val positionMs: Long = 0L,
@@ -43,6 +47,8 @@ data class PlaybackUiState(
     val blurAmount: Float = 0.72f,
     val fluidScale: Float = 0.82f,
     val fluidity: Float = 0.62f,
+    val gradientBrightness: Float = 1.0f,
+    val preserveArtworkOnReboot: Boolean = false,
     val textAlignment: TextAlignmentOption = TextAlignmentOption.CENTER,
     val trackSignature: String = "",
     val marqueeStartedAtMs: Long = 0L
@@ -95,8 +101,12 @@ object PlaybackRepository {
     private const val KEY_BLUR_AMOUNT = "blur_amount"
     private const val KEY_FLUID_SCALE = "fluid_scale"
     private const val KEY_FLUIDITY = "fluidity"
+    private const val KEY_GRADIENT_BRIGHTNESS = "gradient_brightness"
+    private const val KEY_PRESERVE_ARTWORK_ON_REBOOT = "preserve_artwork_on_reboot"
     private const val KEY_TEXT_ALIGNMENT = "text_alignment"
+    private const val DURATION_CACHE_PREFIX = "duration_cache_"
     private const val APPLE_MUSIC_PACKAGE = "com.apple.android.music"
+    private const val NEW_TRACK_POSITION_GRACE_MS = 5_000L
 
     private val mutableUiState = MutableStateFlow(PlaybackUiState())
     val uiState: StateFlow<PlaybackUiState> = mutableUiState.asStateFlow()
@@ -107,8 +117,9 @@ object PlaybackRepository {
     fun initialize(context: Context) {
         if (appContext != null) return
         appContext = context.applicationContext
-        ArtworkCache.initialize(context.applicationContext)
         val prefs = requirePrefs()
+        val preserveArtworkOnReboot = prefs.getBoolean(KEY_PRESERVE_ARTWORK_ON_REBOOT, false)
+        ArtworkCache.initialize(context.applicationContext, preserveArtworkOnReboot)
         mutableUiState.value = mutableUiState.value.copy(
             cardOffsetX = prefs.getFloat(KEY_CARD_X, 0f).coerceIn(CARD_X_MIN, CARD_X_MAX),
             cardOffsetY = prefs.getFloat(KEY_CARD_Y, 0f).coerceIn(CARD_Y_MIN, CARD_Y_MAX),
@@ -129,6 +140,8 @@ object PlaybackRepository {
             blurAmount = prefs.getFloat(KEY_BLUR_AMOUNT, 0.72f).coerceIn(0f, 1f),
             fluidScale = prefs.getFloat(KEY_FLUID_SCALE, 0.82f).coerceIn(0f, 1f),
             fluidity = prefs.getFloat(KEY_FLUIDITY, 0.62f).coerceIn(0f, 1f),
+            gradientBrightness = prefs.getFloat(KEY_GRADIENT_BRIGHTNESS, 1.0f).coerceIn(0.65f, 1.65f),
+            preserveArtworkOnReboot = preserveArtworkOnReboot,
             textAlignment = prefs.getString(KEY_TEXT_ALIGNMENT, TextAlignmentOption.CENTER.name)
                 ?.let { runCatching { TextAlignmentOption.valueOf(it) }.getOrNull() }
                 ?: TextAlignmentOption.CENTER
@@ -159,6 +172,10 @@ object PlaybackRepository {
         currentController = controller
         controller?.registerCallback(controllerCallback)
         syncFromController(controller)
+    }
+
+    fun refreshCurrentPlayback() {
+        syncFromController(currentController)
     }
 
     fun moveCard(dx: Int, dy: Int) {
@@ -279,6 +296,21 @@ object PlaybackRepository {
         persistLayout()
     }
 
+    fun setGradientBrightness(brightness: Float) {
+        mutableUiState.update { state ->
+            state.copy(gradientBrightness = brightness.coerceIn(0.65f, 1.65f))
+        }
+        persistLayout()
+    }
+
+    fun setPreserveArtworkOnReboot(enabled: Boolean) {
+        mutableUiState.update { state ->
+            state.copy(preserveArtworkOnReboot = enabled)
+        }
+        ArtworkCache.setPreserveAcrossReboot(enabled)
+        persistLayout()
+    }
+
     fun setTextAlignment(alignment: TextAlignmentOption) {
         mutableUiState.update { state ->
             state.copy(textAlignment = alignment)
@@ -305,9 +337,12 @@ object PlaybackRepository {
                 blurAmount = 0.72f,
                 fluidScale = 0.82f,
                 fluidity = 0.62f,
+                gradientBrightness = 1.0f,
+                preserveArtworkOnReboot = false,
                 textAlignment = TextAlignmentOption.CENTER
             )
         }
+        ArtworkCache.setPreserveAcrossReboot(false)
         persistLayout()
     }
 
@@ -332,24 +367,49 @@ object PlaybackRepository {
             } else {
                 val updatedTitle = cleanTitle.ifBlank { state.title }
                 val updatedArtist = cleanArtist.ifBlank { state.artist }
-                val updatedSignature = listOf(
-                    if (state.sourcePackage.isBlank()) packageName else state.sourcePackage,
-                    updatedTitle,
-                    updatedArtist,
-                    state.album
-                ).joinToString("|")
-                val resolvedArtwork = artwork ?: ArtworkCache.getSync(updatedSignature) ?: state.artworkBitmap
+                val resolvedPackage = if (state.sourcePackage.isBlank()) packageName else state.sourcePackage
+                val cacheKeys = artworkCacheKeys(
+                    packageName = resolvedPackage,
+                    title = updatedTitle,
+                    artist = updatedArtist,
+                    album = state.album
+                )
+                val updatedSignature = cacheKeys.first()
+                val signatureChanged = state.trackSignature != updatedSignature
+                val memoryArtwork = ArtworkCache.getMemorySync(cacheKeys)
+                val cachedDuration = cachedDurationMs(cacheKeys)
                 if (artwork != null) {
-                    ArtworkCache.storeAsync(updatedSignature, artwork)
+                    ArtworkCache.storeAsync(cacheKeys, artwork)
+                }
+                val explicit = inferExplicitFlag(title = updatedTitle, metadata = null, extras = null)
+                val resolvedArtwork = if (signatureChanged) {
+                    memoryArtwork ?: artwork
+                } else {
+                    chooseSharperArtwork(state.artworkBitmap, memoryArtwork ?: artwork)
+                }
+                val resolvedExplicit = explicit || (!signatureChanged && state.isExplicit)
+                val resolvedDuration = if (signatureChanged) cachedDuration ?: 0L else cachedDuration ?: state.durationMs
+                val sameTrackNoVisualChange = !signatureChanged &&
+                    updatedTitle == state.title &&
+                    updatedArtist == state.artist &&
+                    resolvedExplicit == state.isExplicit &&
+                    resolvedArtwork === state.artworkBitmap &&
+                    resolvedDuration == state.durationMs
+                if (sameTrackNoVisualChange) {
+                    return@update state
                 }
                 state.copy(
                     title = updatedTitle,
                     artist = updatedArtist,
                     sourceApp = if (state.sourcePackage.isBlank()) readableSourceName(packageName) else state.sourceApp,
                     sourcePackage = if (state.sourcePackage.isBlank()) packageName else state.sourcePackage,
+                    isExplicit = resolvedExplicit,
                     artworkBitmap = resolvedArtwork,
+                    durationMs = resolvedDuration,
+                    positionMs = if (signatureChanged) 0L else state.positionMs,
+                    positionCapturedAtMs = if (signatureChanged) now else state.positionCapturedAtMs,
                     trackSignature = updatedSignature,
-                    marqueeStartedAtMs = if (state.trackSignature != updatedSignature || state.marqueeStartedAtMs == 0L) {
+                    marqueeStartedAtMs = if (signatureChanged || state.marqueeStartedAtMs == 0L) {
                         now
                     } else {
                         state.marqueeStartedAtMs
@@ -365,6 +425,7 @@ object PlaybackRepository {
                 state.copy(
                     hasSourceSession = false,
                     isPlaying = false,
+                    playbackSpeed = 0f,
                     pausedAtMs = SystemClock.elapsedRealtime()
                 )
             }
@@ -382,20 +443,78 @@ object PlaybackRepository {
         val metadataArtwork = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
-        val position = playbackState?.position?.coerceAtLeast(0L) ?: uiState.value.positionMs
-        val duration = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.coerceAtLeast(0L)
-            ?: uiState.value.durationMs
-        val signature = listOf(packageName, trackTitle, trackArtist, trackAlbum).joinToString("|")
-        val artwork = metadataArtwork ?: ArtworkCache.getSync(signature)
+        val cacheKeys = artworkCacheKeys(
+            packageName = packageName,
+            title = trackTitle,
+            artist = trackArtist,
+            album = trackAlbum
+        )
+        val signature = cacheKeys.first()
+        val isPlayingNow = playbackStateCode == PlaybackState.STATE_PLAYING
+        val playbackSpeed = playbackState.playbackSpeedFor(isPlayingNow)
+        val rawPosition = playbackState?.currentPositionMs(playbackSpeed)
+        val metadataDuration = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.coerceAtLeast(0L)
+        val cachedDuration = cachedDurationMs(cacheKeys)
         if (metadataArtwork != null) {
-            ArtworkCache.storeAsync(signature, metadataArtwork)
+            ArtworkCache.storeAsync(cacheKeys, metadataArtwork)
         }
+        if (metadataDuration != null && metadataDuration > 0L) {
+            rememberDuration(cacheKeys, metadataDuration)
+        }
+        val memoryArtwork = ArtworkCache.getMemorySync(cacheKeys)
+        val explicit = inferExplicitFlag(
+            title = trackTitle,
+            metadata = metadata,
+            extras = description?.extras
+        )
 
         mutableUiState.update { state ->
-            val isPlayingNow =
-                playbackStateCode == PlaybackState.STATE_PLAYING || playbackStateCode == PlaybackState.STATE_BUFFERING
             val now = SystemClock.elapsedRealtime()
             val signatureChanged = state.trackSignature != signature
+            val resolvedPosition = when {
+                signatureChanged -> rawPosition?.takeIf { it <= NEW_TRACK_POSITION_GRACE_MS } ?: 0L
+                rawPosition != null -> rawPosition
+                else -> state.positionMs
+            }
+            val resolvedDuration = metadataDuration ?: cachedDuration ?: if (signatureChanged) 0L else state.durationMs
+            val artworkCandidate = metadataArtwork ?: memoryArtwork
+            val earlyTrackArtworkWindow = now - state.marqueeStartedAtMs <= 3_000L
+            val resolvedArtwork = if (signatureChanged) {
+                artworkCandidate
+            } else if (metadataArtwork != null && earlyTrackArtworkWindow && metadataArtwork !== state.artworkBitmap) {
+                metadataArtwork
+            } else if (metadataArtwork != null) {
+                chooseSessionArtwork(
+                    current = state.artworkBitmap,
+                    candidate = metadataArtwork
+                )
+            } else {
+                chooseSharperArtwork(
+                    current = state.artworkBitmap,
+                    candidate = artworkCandidate
+                )
+            }
+            val resolvedExplicit = explicit || (!signatureChanged && state.isExplicit)
+            val predictedPosition = if (state.isPlaying) {
+                state.positionMs + ((now - state.positionCapturedAtMs).coerceAtLeast(0L) * state.playbackSpeed).toLong()
+            } else {
+                state.positionMs
+            }
+            val positionDrift = rawPosition?.let { abs(it - predictedPosition) } ?: 0L
+            val onlyPlaybackTick = !signatureChanged &&
+                isPlayingNow &&
+                state.isPlaying &&
+                trackTitle == state.title &&
+                trackArtist == state.artist &&
+                trackAlbum == state.album &&
+                resolvedDuration == state.durationMs &&
+                resolvedExplicit == state.isExplicit &&
+                playbackSpeed == state.playbackSpeed &&
+                resolvedArtwork === state.artworkBitmap &&
+                positionDrift < 1_500L
+            if (onlyPlaybackTick) {
+                return@update state
+            }
             state.copy(
                 title = trackTitle,
                 artist = trackArtist,
@@ -403,12 +522,14 @@ object PlaybackRepository {
                 sourceApp = readableSourceName(packageName),
                 sourcePackage = packageName,
                 playbackDeviceLabel = playbackDeviceLabel(controller),
-                artworkBitmap = artwork ?: state.artworkBitmap,
+                isExplicit = resolvedExplicit,
+                artworkBitmap = resolvedArtwork,
                 hasSourceSession = true,
                 isPlaying = isPlayingNow,
+                playbackSpeed = playbackSpeed,
                 pausedAtMs = if (isPlayingNow) 0L else if (state.pausedAtMs == 0L) now else state.pausedAtMs,
-                durationMs = duration,
-                positionMs = position,
+                durationMs = resolvedDuration,
+                positionMs = resolvedPosition,
                 positionCapturedAtMs = now,
                 trackSignature = signature,
                 marqueeStartedAtMs = if (signatureChanged || state.marqueeStartedAtMs == 0L) now else state.marqueeStartedAtMs
@@ -418,6 +539,45 @@ object PlaybackRepository {
 
     fun shouldShowCard(state: PlaybackUiState = uiState.value): Boolean {
         return state.hasSourceSession && state.isPlaying
+    }
+
+    private fun artworkCacheKeys(
+        packageName: String,
+        title: String,
+        artist: String,
+        album: String
+    ): List<String> {
+        val normalizedPackage = canonicalizeCachePart(packageName, preserveSymbols = true)
+        val normalizedTitle = canonicalizeCachePart(title)
+        val normalizedArtist = canonicalizeCachePart(artist)
+        val normalizedAlbum = canonicalizeCachePart(album)
+        return buildList {
+            add(listOf(normalizedPackage, normalizedTitle, normalizedArtist).joinToString("|"))
+            if (normalizedAlbum.isNotBlank()) {
+                add(listOf(normalizedPackage, normalizedTitle, normalizedArtist, normalizedAlbum).joinToString("|"))
+            }
+            if (normalizedTitle.isNotBlank() && normalizedArtist.isNotBlank()) {
+                add(listOf(normalizedTitle, normalizedArtist).joinToString("|global_title_artist|"))
+            }
+            if (normalizedTitle.isNotBlank() && normalizedArtist.isNotBlank()) {
+                add(listOf(normalizedPackage, normalizedTitle, normalizedArtist).joinToString("|title_artist|"))
+            }
+            if (normalizedTitle.isNotBlank()) {
+                add(normalizedTitle)
+                add(listOf(normalizedPackage, normalizedTitle).joinToString("|title|"))
+            }
+            if (normalizedArtist.isNotBlank()) {
+                add(listOf(normalizedArtist, normalizedTitle).joinToString("|artist_title|"))
+            }
+            if (normalizedAlbum.isNotBlank()) {
+                add(normalizedAlbum)
+                add(listOf(normalizedPackage, normalizedAlbum).joinToString("|album|"))
+                if (normalizedArtist.isNotBlank()) {
+                    add(listOf(normalizedArtist, normalizedAlbum).joinToString("|global_artist_album|"))
+                    add(listOf(normalizedPackage, normalizedArtist, normalizedAlbum).joinToString("|artist_album|"))
+                }
+            }
+        }.distinct()
     }
 
     private fun playbackDeviceLabel(controller: MediaController): String {
@@ -445,6 +605,44 @@ object PlaybackRepository {
         }
     }
 
+    private fun inferExplicitFlag(
+        title: String,
+        metadata: MediaMetadata?,
+        extras: Bundle?
+    ): Boolean {
+        val explicitExtraKeys = listOf(
+            "android.media.IS_EXPLICIT",
+            "android.media.metadata.IS_EXPLICIT",
+            "android.media.extra.IS_EXPLICIT",
+            "androidx.media.IS_EXPLICIT",
+            "is_explicit",
+            "isExplicit"
+        )
+
+        val extrasFlag = explicitExtraKeys.any { key ->
+            val bundle = extras ?: return@any false
+            when {
+                bundle.containsKey(key) && bundle.getBoolean(key) -> true
+                bundle.containsKey(key) && bundle.getInt(key, 0) == 1 -> true
+                bundle.containsKey(key) && bundle.getLong(key, 0L) == 1L -> true
+                bundle.containsKey(key) && bundle.getString(key).equals("true", ignoreCase = true) -> true
+                else -> false
+            }
+        }
+        if (extrasFlag) return true
+
+        val metadataFlag = metadata?.run {
+            keySet().any { key ->
+                val normalized = key.lowercase()
+                if (!normalized.contains("explicit")) return@any false
+                getLong(key) == 1L || getString(key).equals("true", ignoreCase = true)
+            }
+        } ?: false
+        if (metadataFlag) return true
+
+        return Regex("""(^|[\s\[\(\-])E([\s\]\)\-]|$)""", RegexOption.IGNORE_CASE).containsMatchIn(title)
+    }
+
     private fun persistLayout() {
         val prefs = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return
         val state = mutableUiState.value
@@ -465,8 +663,78 @@ object PlaybackRepository {
             .putFloat(KEY_BLUR_AMOUNT, state.blurAmount)
             .putFloat(KEY_FLUID_SCALE, state.fluidScale)
             .putFloat(KEY_FLUIDITY, state.fluidity)
+            .putFloat(KEY_GRADIENT_BRIGHTNESS, state.gradientBrightness)
+            .putBoolean(KEY_PRESERVE_ARTWORK_ON_REBOOT, state.preserveArtworkOnReboot)
             .putString(KEY_TEXT_ALIGNMENT, state.textAlignment.name)
             .apply()
+    }
+
+    private fun canonicalizeCachePart(value: String, preserveSymbols: Boolean = false): String {
+        val trimmed = value.trim().lowercase()
+        if (trimmed.isBlank()) return ""
+        val normalized = if (preserveSymbols) {
+            trimmed
+        } else {
+            trimmed.replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        }
+        return normalized.replace(Regex("\\s+"), " ").trim()
+    }
+
+    private fun cachedDurationMs(cacheKeys: Collection<String>): Long? {
+        val prefs = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return null
+        cacheKeys.forEach { key ->
+            val duration = prefs.getLong(durationCacheKey(key), 0L)
+            if (duration > 0L) return duration
+        }
+        return null
+    }
+
+    private fun rememberDuration(cacheKeys: Collection<String>, durationMs: Long) {
+        if (durationMs <= 0L) return
+        val prefs = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return
+        val editor = prefs.edit()
+        cacheKeys.take(4).forEach { key ->
+            if (key.isNotBlank()) {
+                editor.putLong(durationCacheKey(key), durationMs)
+            }
+        }
+        editor.apply()
+    }
+
+    private fun durationCacheKey(signature: String): String {
+        return "$DURATION_CACHE_PREFIX$signature"
+    }
+
+    private fun chooseSharperArtwork(current: Bitmap?, candidate: Bitmap?): Bitmap? {
+        if (candidate == null) return current
+        if (current == null) return candidate
+        val currentPixels = current.width * current.height
+        val candidatePixels = candidate.width * candidate.height
+        return if (candidatePixels >= (currentPixels * 1.18f).toInt()) candidate else current
+    }
+
+    private fun chooseSessionArtwork(current: Bitmap?, candidate: Bitmap): Bitmap {
+        if (current == null) return candidate
+        val currentPixels = current.width * current.height
+        val candidatePixels = candidate.width * candidate.height
+        return if (candidatePixels >= (currentPixels * 1.10f).toInt()) {
+            candidate
+        } else {
+            current
+        }
+    }
+
+    private fun PlaybackState?.playbackSpeedFor(isPlayingNow: Boolean): Float {
+        if (!isPlayingNow || this == null) return 0f
+        return playbackSpeed.takeIf { it > 0f } ?: 1f
+    }
+
+    private fun PlaybackState.currentPositionMs(speed: Float): Long? {
+        val basePosition = position.takeIf { it >= 0L } ?: return null
+        val updatedAt = lastPositionUpdateTime
+        if (speed <= 0f || updatedAt <= 0L) return basePosition
+        val elapsedSincePlayerUpdate = ((SystemClock.elapsedRealtime() - updatedAt).coerceAtLeast(0L) * speed).toLong()
+        return basePosition + elapsedSincePlayerUpdate
     }
 
     private fun requirePrefs() =

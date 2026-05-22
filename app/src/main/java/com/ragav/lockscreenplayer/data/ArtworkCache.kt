@@ -15,12 +15,13 @@ import java.security.MessageDigest
 
 object ArtworkCache {
     private const val CACHE_DIR_NAME = "artwork-cache"
-    private const val MAX_MEMORY_BYTES = 8 * 1024 * 1024
-    private const val MAX_DISK_FILES = 50
-    private const val MAX_DISK_BYTES = 25L * 1024L * 1024L
+    private const val PERSISTENT_CACHE_DIR_NAME = "persistent-artwork-cache"
+    private const val MAX_MEMORY_BYTES = 40 * 1024 * 1024
+    private const val MAX_DISK_FILES = 200
+    private const val MAX_DISK_BYTES = 80L * 1024L * 1024L
     private const val STALE_AFTER_MS = 24L * 60L * 60L * 1000L
     private const val MAINTENANCE_INTERVAL_MS = 60L * 60L * 1000L
-    private const val MAX_ARTWORK_EDGE = 1024
+    private const val MAX_ARTWORK_EDGE = 1600
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val memoryCache = object : LruCache<String, Bitmap>(MAX_MEMORY_BYTES) {
@@ -31,12 +32,29 @@ object ArtworkCache {
     private var cacheDir: File? = null
 
     @Volatile
+    private var appContext: Context? = null
+
+    @Volatile
+    private var preserveAcrossReboot: Boolean = false
+
+    @Volatile
     private var lastMaintenanceAtMs: Long = 0L
 
-    fun initialize(context: Context) {
-        if (cacheDir == null) {
-            cacheDir = File(context.cacheDir, CACHE_DIR_NAME).apply { mkdirs() }
-        }
+    fun initialize(context: Context, preserveAcrossReboot: Boolean = false) {
+        appContext = context.applicationContext
+        this.preserveAcrossReboot = preserveAcrossReboot
+        cacheDir = resolveCacheDir(context.applicationContext, preserveAcrossReboot)
+        scheduleMaintenance(force = true)
+    }
+
+    fun setPreserveAcrossReboot(enabled: Boolean) {
+        val context = appContext ?: return
+        if (preserveAcrossReboot == enabled && cacheDir != null) return
+        val oldDir = cacheDir
+        preserveAcrossReboot = enabled
+        val newDir = resolveCacheDir(context, enabled)
+        migrateCache(oldDir, newDir)
+        cacheDir = newDir
         scheduleMaintenance(force = true)
     }
 
@@ -65,9 +83,10 @@ object ArtworkCache {
 
     fun storeAsync(signature: String, bitmap: Bitmap?) {
         if (signature.isBlank() || bitmap == null) return
-        val normalized = normalize(bitmap)
-        memoryCache.put(signature, normalized)
+        if (!shouldReplaceMemory(signature, bitmap)) return
+        memoryCache.put(signature, bitmap)
         scope.launch {
+            val normalized = normalize(bitmap)
             val file = fileFor(signature) ?: return@launch
             runCatching {
                 FileOutputStream(file).use { stream ->
@@ -77,6 +96,50 @@ object ArtworkCache {
             }
             scheduleMaintenance()
         }
+    }
+
+    fun storeAsync(signatures: Collection<String>, bitmap: Bitmap?) {
+        val validKeys = signatures.filter { it.isNotBlank() }.distinct()
+        if (validKeys.isEmpty() || bitmap == null) return
+        val writableKeys = validKeys.filter { shouldReplaceMemory(it, bitmap) }
+        if (writableKeys.isEmpty()) return
+        writableKeys.forEach { memoryCache.put(it, bitmap) }
+        scope.launch {
+            val normalized = normalize(bitmap)
+            writableKeys.forEach { signature ->
+                val file = fileFor(signature) ?: return@forEach
+                runCatching {
+                    FileOutputStream(file).use { stream ->
+                        normalized.compress(Bitmap.CompressFormat.WEBP_LOSSY, 92, stream)
+                    }
+                    file.setLastModified(System.currentTimeMillis())
+                }
+            }
+            scheduleMaintenance()
+        }
+    }
+
+    private fun shouldReplaceMemory(signature: String, candidate: Bitmap): Boolean {
+        val existing = memoryCache.get(signature) ?: return true
+        val existingPixels = existing.width * existing.height
+        val candidatePixels = candidate.width * candidate.height
+        return candidatePixels >= (existingPixels * 0.9f).toInt()
+    }
+
+    fun getSync(signatures: Collection<String>): Bitmap? {
+        signatures.forEach { signature ->
+            getSync(signature)?.let { return it }
+        }
+        return null
+    }
+
+    fun getMemorySync(signatures: Collection<String>): Bitmap? {
+        signatures.forEach { signature ->
+            if (signature.isNotBlank()) {
+                memoryCache.get(signature)?.let { return it }
+            }
+        }
+        return null
     }
 
     private fun touch(signature: String) {
@@ -124,6 +187,26 @@ object ArtworkCache {
     private fun fileFor(signature: String): File? {
         val directory = cacheDir ?: return null
         return File(directory, "${hash(signature)}.webp")
+    }
+
+    private fun resolveCacheDir(context: Context, preserveAcrossReboot: Boolean): File {
+        return if (preserveAcrossReboot) {
+            File(context.filesDir, PERSISTENT_CACHE_DIR_NAME).apply { mkdirs() }
+        } else {
+            File(context.cacheDir, CACHE_DIR_NAME).apply { mkdirs() }
+        }
+    }
+
+    private fun migrateCache(from: File?, to: File) {
+        if (from == null || !from.exists() || from.absolutePath == to.absolutePath) return
+        from.listFiles()
+            ?.filter { it.isFile }
+            ?.forEach { source ->
+                val target = File(to, source.name)
+                if (!target.exists() || source.lastModified() > target.lastModified()) {
+                    runCatching { source.copyTo(target, overwrite = true) }
+                }
+            }
     }
 
     private fun hash(value: String): String {

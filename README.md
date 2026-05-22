@@ -20,11 +20,19 @@ HERTZ keeps a small local artwork cache so song changes can feel faster.
 - Recent artwork is also cached on disk so reopening the app or wallpaper can feel faster
 - Cached items that are not used for 24 hours are deleted automatically
 - The cache is capped to stay lightweight:
-  - around 8 MB in memory
-  - up to 50 files on disk
-  - about 25 MB max disk usage
+  - around 40 MB in memory
+  - up to 200 files on disk
+  - about 80 MB max disk usage
 
 The cache is local-only and is used only to improve artwork loading speed.
+
+## Why it gets smoother as you use it
+
+The first time a brand-new song plays, HERTZ must wait for Android or the music app to publish the artwork and timeline through the media session or notification. That can create a short delay, especially with high-resolution album art.
+
+After a song has appeared once, HERTZ can reuse its cached artwork and remembered duration by matching the title and artist. This means repeated songs should load much faster, often close to instantly. Text, artist, and timeline updates are designed to appear first, so the wallpaper does not feel stuck while artwork is still arriving.
+
+If a new song starts but the cover art is not ready yet, HERTZ avoids showing the previous song artwork as if it were current. The card updates with the new text first, then fills in the artwork as soon as Android provides it.
 
 ## Privacy
 

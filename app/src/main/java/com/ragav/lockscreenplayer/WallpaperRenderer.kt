@@ -23,6 +23,7 @@ import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 object LiveWallpaperRenderer {
     fun render(
@@ -33,41 +34,28 @@ object LiveWallpaperRenderer {
         phase: Float = 0f,
         drawCards: Boolean = true
     ): Bitmap {
-        val effectiveFluidity = max(state.fluidity, 0.62f)
-        val effectiveFluidScale = max(state.fluidScale, 0.82f)
+        val gradientBrightness = state.gradientBrightness.coerceIn(0.65f, 1.65f)
         val safeWidth = width.coerceAtLeast(1)
         val safeHeight = height.coerceAtLeast(1)
         val sourceArtwork = state.artworkBitmap ?: loadFallbackArtwork(context)
-        val artworkForPalette = scaleAndCrop(sourceArtwork, max(240, safeWidth / 3), max(240, safeHeight / 3))
+        val artworkForPalette = scaleForPalette(sourceArtwork)
         val output = Bitmap.createBitmap(safeWidth, safeHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
-        val palette = extractPalette(artworkForPalette)
-        val fluidLayer = Bitmap.createBitmap(safeWidth, safeHeight, Bitmap.Config.ARGB_8888)
-        val fluidCanvas = Canvas(fluidLayer)
-        val layerBlurRadiusPx = (64 + state.blurAmount * 180).toInt()
+        val basePalette = extractPalette(artworkForPalette)
+        val accentPalette = basePalette.map { enrichColorPresence(it, gradientBrightness) }
 
-        drawPaletteBase(canvas, palette, safeWidth, safeHeight)
-        drawDiffuseBackdrop(
-            canvas = fluidCanvas,
-            palette = palette,
-            width = safeWidth,
-            height = safeHeight,
-            phase = phase,
-            fluidity = effectiveFluidity,
-            blurAmount = state.blurAmount,
-            fluidScale = effectiveFluidScale
-        )
-        val softenedFluid = createBlurredBitmap(fluidLayer, layerBlurRadiusPx)
-        val fluidPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            alpha = (170 + effectiveFluidity * 40f + state.blurAmount * 30f).toInt().coerceIn(130, 238)
-            isFilterBitmap = true
-        }
-        canvas.drawBitmap(softenedFluid, 0f, 0f, fluidPaint)
+        drawPaletteBase(canvas, accentPalette, safeWidth, safeHeight)
+        drawStaticGradientGlow(canvas, accentPalette, safeWidth, safeHeight, state.blurAmount)
         drawShade(canvas, safeWidth, safeHeight)
 
         if (drawCards) {
-            val coverRect = drawArtworkCard(canvas, sourceArtwork, state, safeWidth, safeHeight)
-            drawPlayerCard(canvas, state, safeWidth, safeHeight, coverRect, context, softenedFluid)
+            val cardBackdrop = output.copy(Bitmap.Config.ARGB_8888, false)
+            val coverRect = if (state.artworkBitmap != null) {
+                drawArtworkCard(canvas, state.artworkBitmap, state, safeWidth, safeHeight)
+            } else {
+                artworkCardRect(state, safeWidth, safeHeight)
+            }
+            drawPlayerCard(canvas, state, safeWidth, safeHeight, coverRect, context, cardBackdrop)
         }
 
         return output
@@ -83,18 +71,78 @@ object LiveWallpaperRenderer {
             shader = LinearGradient(
                 0f,
                 0f,
-                width.toFloat(),
+                width * 0.92f,
                 height.toFloat(),
                 intArrayOf(
-                    withAlpha(palette[0], 255),
-                    withAlpha(palette[1], 245),
-                    withAlpha(palette[2], 235)
+                    preserveColorForWallpaper(blendColors(palette[0], palette[3], 0.10f), 0.08f),
+                    preserveColorForWallpaper(blendColors(palette[1], palette[0], 0.18f), 0.03f),
+                    preserveColorForWallpaper(blendColors(palette[2], palette[1], 0.12f), 0.10f)
                 ),
-                floatArrayOf(0f, 0.52f, 1f),
+                floatArrayOf(0f, 0.46f, 1f),
                 Shader.TileMode.CLAMP
             )
         }
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), basePaint)
+    }
+
+    private fun drawStaticGradientGlow(
+        canvas: Canvas,
+        palette: List<Int>,
+        width: Int,
+        height: Int,
+        blurAmount: Float
+    ) {
+        val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val alpha = (168 + blurAmount * 46f).toInt().coerceIn(150, 222)
+        val glows = listOf(
+            BlobSpec(
+                cx = width * 0.16f,
+                cy = height * 0.20f,
+                radius = min(width, height) * 0.76f,
+                color = palette[0],
+                stretchX = 1.25f,
+                stretchY = 0.90f
+            ),
+            BlobSpec(
+                cx = width * 0.86f,
+                cy = height * 0.34f,
+                radius = min(width, height) * 0.72f,
+                color = palette[1],
+                stretchX = 1.08f,
+                stretchY = 1.02f
+            ),
+            BlobSpec(
+                cx = width * 0.52f,
+                cy = height * 0.84f,
+                radius = min(width, height) * 0.82f,
+                color = palette[2],
+                stretchX = 1.40f,
+                stretchY = 0.84f
+            ),
+            BlobSpec(
+                cx = width * 0.60f,
+                cy = height * 0.50f,
+                radius = min(width, height) * 0.64f,
+                color = blendColors(palette[3], palette[0], 0.18f),
+                stretchX = 1.18f,
+                stretchY = 1.10f
+            )
+        )
+
+        glows.forEach { glow ->
+            glowPaint.shader = RadialGradient(
+                glow.cx,
+                glow.cy,
+                glow.radius,
+                intArrayOf(withAlpha(glow.color, alpha), withAlpha(glow.color, 0)),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            canvas.save()
+            canvas.scale(glow.stretchX, glow.stretchY, glow.cx, glow.cy)
+            canvas.drawCircle(glow.cx, glow.cy, glow.radius, glowPaint)
+            canvas.restore()
+        }
     }
 
     private fun drawDiffuseBackdrop(
@@ -107,39 +155,57 @@ object LiveWallpaperRenderer {
         blurAmount: Float,
         fluidScale: Float
     ) {
-        val scale = 0.78f + fluidScale * 1.04f
-        val motion = 0.08f + fluidity * 0.22f
-        val bloomAlpha = (150 + fluidity * 60f + blurAmount * 24f).toInt().coerceIn(110, 225)
+        val scale = 0.96f + fluidScale * 1.18f
+        val motion = 0.065f + fluidity * 0.14f
+        val bloomAlpha = (172 + fluidity * 52f + blurAmount * 18f).toInt().coerceIn(140, 238)
         val blobs = listOf(
             BlobSpec(
-                cx = width * (0.18f + motion * sin(phase * 0.42f + 0.2f)),
-                cy = height * (0.18f + motion * cos(phase * 0.38f + 1.2f)),
-                radius = min(width, height) * (0.34f + scale * 0.24f + blurAmount * 0.06f),
-                color = palette[0]
+                cx = width * (0.20f + motion * sin(phase * 0.20f + 0.6f)),
+                cy = height * (0.18f + motion * cos(phase * 0.18f + 1.1f)),
+                radius = min(width, height) * (0.42f + scale * 0.24f + blurAmount * 0.06f),
+                color = blendColors(palette[0], palette[1], 0.16f),
+                stretchX = 1.26f,
+                stretchY = 0.82f
             ),
             BlobSpec(
-                cx = width * (0.84f - motion * sin(phase * 0.36f + 0.8f)),
-                cy = height * (0.24f + motion * sin(phase * 0.54f + 2.0f)),
-                radius = min(width, height) * (0.32f + scale * 0.22f + blurAmount * 0.06f),
-                color = palette[1]
+                cx = width * (0.82f - motion * sin(phase * 0.24f + 1.8f)),
+                cy = height * (0.24f + motion * sin(phase * 0.22f + 2.1f)),
+                radius = min(width, height) * (0.40f + scale * 0.22f + blurAmount * 0.06f),
+                color = blendColors(palette[1], palette[2], 0.12f),
+                stretchX = 1.22f,
+                stretchY = 0.86f
             ),
             BlobSpec(
-                cx = width * (0.48f + motion * cos(phase * 0.46f + 2.1f)),
-                cy = height * (0.80f - motion * sin(phase * 0.58f + 1.0f)),
-                radius = min(width, height) * (0.30f + scale * 0.20f + blurAmount * 0.05f),
-                color = palette[2]
+                cx = width * (0.52f + motion * cos(phase * 0.26f + 2.0f)),
+                cy = height * (0.80f - motion * sin(phase * 0.28f + 0.9f)),
+                radius = min(width, height) * (0.38f + scale * 0.20f + blurAmount * 0.05f),
+                color = blendColors(palette[2], palette[0], 0.18f),
+                stretchX = 1.08f,
+                stretchY = 1.06f
             ),
             BlobSpec(
-                cx = width * (0.16f + motion * cos(phase * 0.31f + 2.6f)),
-                cy = height * (0.70f + motion * sin(phase * 0.34f + 0.5f)),
-                radius = min(width, height) * (0.26f + scale * 0.16f + blurAmount * 0.05f),
-                color = blendColors(palette[0], palette[2], 0.45f)
+                cx = width * (0.08f + motion * cos(phase * 0.18f + 2.5f)),
+                cy = height * (0.60f + motion * sin(phase * 0.20f + 0.4f)),
+                radius = min(width, height) * (0.34f + scale * 0.16f + blurAmount * 0.04f),
+                color = blendColors(palette[0], palette[2], 0.42f),
+                stretchX = 1.36f,
+                stretchY = 0.74f
             ),
             BlobSpec(
-                cx = width * (0.78f - motion * cos(phase * 0.28f + 1.8f)),
-                cy = height * (0.66f - motion * sin(phase * 0.32f + 1.4f)),
-                radius = min(width, height) * (0.28f + scale * 0.17f + blurAmount * 0.05f),
-                color = blendColors(palette[1], palette[0], 0.42f)
+                cx = width * (0.94f - motion * cos(phase * 0.16f + 1.6f)),
+                cy = height * (0.68f - motion * sin(phase * 0.18f + 1.2f)),
+                radius = min(width, height) * (0.34f + scale * 0.17f + blurAmount * 0.04f),
+                color = blendColors(palette[1], palette[0], 0.38f),
+                stretchX = 1.34f,
+                stretchY = 0.76f
+            ),
+            BlobSpec(
+                cx = width * (0.50f + motion * sin(phase * 0.14f + 0.1f)),
+                cy = height * (0.46f + motion * cos(phase * 0.16f + 2.8f)),
+                radius = min(width, height) * (0.44f + scale * 0.22f + blurAmount * 0.05f),
+                color = blendColors(palette[0], palette[1], 0.5f),
+                stretchX = 1.55f,
+                stretchY = 0.62f
             )
         )
 
@@ -153,7 +219,10 @@ object LiveWallpaperRenderer {
                 null,
                 Shader.TileMode.CLAMP
             )
+            canvas.save()
+            canvas.scale(blob.stretchX, blob.stretchY, blob.cx, blob.cy)
             canvas.drawCircle(blob.cx, blob.cy, blob.radius, blobPaint)
+            canvas.restore()
         }
     }
 
@@ -165,10 +234,10 @@ object LiveWallpaperRenderer {
                 0f,
                 height.toFloat(),
                 intArrayOf(
-                    AndroidColor.argb(20, 255, 255, 255),
-                    AndroidColor.argb(32, 255, 255, 255),
-                    AndroidColor.argb(102, 8, 6, 10),
-                    AndroidColor.argb(150, 4, 3, 6)
+                    AndroidColor.argb(10, 255, 255, 255),
+                    AndroidColor.argb(18, 255, 255, 255),
+                    AndroidColor.argb(58, 8, 6, 10),
+                    AndroidColor.argb(104, 4, 3, 6)
                 ),
                 null,
                 Shader.TileMode.CLAMP
@@ -184,10 +253,8 @@ object LiveWallpaperRenderer {
         width: Int,
         height: Int
     ): RectF {
-        val cardSize = min(width * state.cardScale, width * 0.88f)
-        val left = (width - cardSize) / 2f + width * 0.24f * state.cardOffsetX
-        val top = height * 0.12f + height * 0.18f * state.cardOffsetY
-        val rect = RectF(left, top, left + cardSize, top + cardSize)
+        val rect = artworkCardRect(state, width, height)
+        val cardSize = rect.width()
         val radius = min(cardSize * state.cardCornerRadius, 78f)
 
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -207,6 +274,17 @@ object LiveWallpaperRenderer {
         canvas.drawBitmap(cardBitmap, null, rect, cardPaint)
         canvas.restore()
         return rect
+    }
+
+    private fun artworkCardRect(
+        state: PlaybackUiState,
+        width: Int,
+        height: Int
+    ): RectF {
+        val cardSize = min(width * state.cardScale, width * 0.88f)
+        val left = (width - cardSize) / 2f + width * 0.24f * state.cardOffsetX
+        val top = height * 0.12f + height * 0.18f * state.cardOffsetY
+        return RectF(left, top, left + cardSize, top + cardSize)
     }
 
     private fun drawPlayerCard(
@@ -303,8 +381,18 @@ object LiveWallpaperRenderer {
             isPlaying = state.isPlaying,
             pausedAtMs = state.pausedAtMs,
             marqueeStartedAtMs = state.marqueeStartedAtMs,
-            maxCharactersBeforeMarquee = 29
+            maxCharactersBeforeMarquee = 29,
+            rightPadding = if (state.isExplicit) rect.width() * 0.09f else 0f
         )
+        if (state.isExplicit) {
+            drawExplicitBadge(
+                canvas = canvas,
+                centerX = contentRight - rect.width() * 0.035f,
+                centerY = titleY - titlePaint.textSize * 0.34f,
+                size = titlePaint.textSize * 0.78f,
+                typeface = calSans
+            )
+        }
         drawAnimatedText(
             canvas = canvas,
             text = state.artist,
@@ -332,7 +420,7 @@ object LiveWallpaperRenderer {
     ) {
         val effectiveDuration = state.durationMs.coerceAtLeast(1L)
         val elapsed = if (state.isPlaying) {
-            (SystemClock.elapsedRealtime() - state.positionCapturedAtMs).coerceAtLeast(0L)
+            ((SystemClock.elapsedRealtime() - state.positionCapturedAtMs).coerceAtLeast(0L) * state.playbackSpeed).toLong()
         } else {
             0L
         }
@@ -359,9 +447,36 @@ object LiveWallpaperRenderer {
         }
         canvas.drawText(formatTime(currentPosition), left, centerY - rect.height() * 0.07f, timePaint)
         timePaint.textAlign = Paint.Align.RIGHT
-        canvas.drawText("-${formatTime((effectiveDuration - currentPosition).coerceAtLeast(0L))}", right, centerY - rect.height() * 0.07f, timePaint)
+        canvas.drawText(formatTime(effectiveDuration), right, centerY - rect.height() * 0.07f, timePaint)
     }
 
+}
+
+private fun drawExplicitBadge(
+    canvas: Canvas,
+    centerX: Float,
+    centerY: Float,
+    size: Float,
+    typeface: Typeface
+) {
+    val rect = RectF(
+        centerX - size * 0.50f,
+        centerY - size * 0.45f,
+        centerX + size * 0.50f,
+        centerY + size * 0.45f
+    )
+    val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.argb(52, 255, 255, 255)
+    }
+    val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.argb(238, 255, 255, 255)
+        textAlign = Paint.Align.CENTER
+        textSize = size * 0.70f
+        this.typeface = typeface
+    }
+    canvas.drawRoundRect(rect, size * 0.18f, size * 0.18f, badgePaint)
+    val textCenter = centerY - (textPaint.descent() + textPaint.ascent()) / 2f
+    canvas.drawText("E", centerX, textCenter, textPaint)
 }
 
 private fun drawAnimatedText(
@@ -374,9 +489,10 @@ private fun drawAnimatedText(
     isPlaying: Boolean,
     pausedAtMs: Long,
     marqueeStartedAtMs: Long,
-    maxCharactersBeforeMarquee: Int
+    maxCharactersBeforeMarquee: Int,
+    rightPadding: Float = 0f
 ) {
-    val availableWidth = (right - left).coerceAtLeast(1f)
+    val availableWidth = (right - left - rightPadding).coerceAtLeast(1f)
     val trimmed = text.trim()
     if (trimmed.isBlank()) return
 
@@ -384,10 +500,10 @@ private fun drawAnimatedText(
         paint.measureText(trimmed) > availableWidth
 
     if (!shouldMarquee) {
-        val anchorX = when (paint.textAlign) {
+        val anchorX = when (paint.textAlign ?: Paint.Align.LEFT) {
             Paint.Align.LEFT -> left
-            Paint.Align.CENTER -> (left + right) / 2f
-            Paint.Align.RIGHT -> right
+            Paint.Align.CENTER -> left + availableWidth / 2f
+            Paint.Align.RIGHT -> left + availableWidth
         }
         canvas.drawText(fitText(trimmed, paint, availableWidth), anchorX, baselineY, paint)
         return
@@ -398,27 +514,21 @@ private fun drawAnimatedText(
     val spacing = paint.textSize * 1.8f
     val textWidth = paint.measureText(trimmed)
     val loopWidth = textWidth + spacing
-    val holdMs = 2000f
-    val pixelsPerSecond = paint.textSize * 0.92f
+    val pixelsPerSecond = paint.textSize * 0.52f
     val scrollDurationMs = ((loopWidth / pixelsPerSecond) * 1000f).coerceAtLeast(1f)
-    val cycleMs = holdMs + scrollDurationMs
     val motionClockMs = when {
         isPlaying -> SystemClock.elapsedRealtime().toFloat()
         pausedAtMs > 0L -> pausedAtMs.toFloat()
         else -> SystemClock.elapsedRealtime().toFloat()
     }
     val startMs = marqueeStartedAtMs.takeIf { it > 0L }?.toFloat() ?: motionClockMs
-    val cyclePositionMs = ((motionClockMs - startMs).coerceAtLeast(0f)) % cycleMs
-    val scroll = if (cyclePositionMs < holdMs) {
-        0f
-    } else {
-        ((cyclePositionMs - holdMs) / scrollDurationMs) * loopWidth
-    }
+    val cyclePositionMs = ((motionClockMs - startMs).coerceAtLeast(0f)) % scrollDurationMs
+    val scroll = (cyclePositionMs / scrollDurationMs) * loopWidth
 
     canvas.save()
-    canvas.clipRect(left, baselineY - paint.textSize * 1.3f, right, baselineY + paint.textSize * 0.45f)
+    canvas.clipRect(left, baselineY - paint.textSize * 1.3f, left + availableWidth, baselineY + paint.textSize * 0.45f)
     var drawX = left - scroll
-    while (drawX < right) {
+    while (drawX < left + availableWidth) {
         canvas.drawText(trimmed, drawX, baselineY, paint)
         drawX += loopWidth
     }
@@ -430,7 +540,14 @@ private data class BlobSpec(
     val cx: Float,
     val cy: Float,
     val radius: Float,
-    val color: Int
+    val color: Int,
+    val stretchX: Float = 1f,
+    val stretchY: Float = 1f
+)
+
+private data class PaletteBucket(
+    val color: Int,
+    val coverage: Float
 )
 
 fun createBlurredBitmap(source: Bitmap, blurRadiusPx: Int): Bitmap {
@@ -466,6 +583,16 @@ fun scaleAndCrop(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
     )
 }
 
+fun scaleForPalette(source: Bitmap): Bitmap {
+    val largestEdge = max(source.width, source.height).coerceAtLeast(1)
+    val targetEdge = 96
+    if (largestEdge <= targetEdge) return source
+    val scale = targetEdge.toFloat() / largestEdge.toFloat()
+    val targetWidth = max(1, (source.width * scale).toInt())
+    val targetHeight = max(1, (source.height * scale).toInt())
+    return Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
+}
+
 fun fitText(text: String, paint: Paint, maxWidth: Float): String {
     if (paint.measureText(text) <= maxWidth) return text
     var candidate = text
@@ -489,52 +616,58 @@ fun loadFallbackArtwork(context: Context): Bitmap {
 }
 
 private fun extractPalette(bitmap: Bitmap): List<Int> {
-    val points = listOf(
-        bitmap.width * 0.18f to bitmap.height * 0.18f,
-        bitmap.width * 0.50f to bitmap.height * 0.18f,
-        bitmap.width * 0.82f to bitmap.height * 0.18f,
-        bitmap.width * 0.18f to bitmap.height * 0.50f,
-        bitmap.width * 0.50f to bitmap.height * 0.50f,
-        bitmap.width * 0.82f to bitmap.height * 0.50f,
-        bitmap.width * 0.18f to bitmap.height * 0.82f,
-        bitmap.width * 0.50f to bitmap.height * 0.82f,
-        bitmap.width * 0.82f to bitmap.height * 0.82f
-    )
-    val sampled = points.map { (x, y) ->
-        sampledAverageColor(bitmap, x.toInt(), y.toInt(), max(8, min(bitmap.width, bitmap.height) / 16))
-    }
-    return selectDistinctPalette(sampled)
-}
+    val sampleWidth = min(72, bitmap.width.coerceAtLeast(1))
+    val sampleHeight = min(72, bitmap.height.coerceAtLeast(1))
+    val sampledBitmap = Bitmap.createScaledBitmap(bitmap, sampleWidth, sampleHeight, true)
+    val buckets = LinkedHashMap<Int, BucketAccumulator>()
 
-private fun selectDistinctPalette(sampled: List<Int>): List<Int> {
-    if (sampled.isEmpty()) {
-        return listOf(
-            AndroidColor.argb(255, 182, 126, 126),
-            AndroidColor.argb(255, 144, 104, 176),
-            AndroidColor.argb(255, 92, 118, 164)
-        )
+    for (x in 0 until sampledBitmap.width) {
+        for (y in 0 until sampledBitmap.height) {
+            val pixel = sampledBitmap.getPixel(x, y)
+            val bucketKey = quantizedColorKey(pixel)
+            val bucket = buckets.getOrPut(bucketKey) { BucketAccumulator() }
+            bucket.add(pixel)
+        }
     }
 
-    val ranked = sampled
-        .distinct()
-        .sortedByDescending { paletteInterest(it) }
+    val totalPixels = (sampledBitmap.width * sampledBitmap.height).coerceAtLeast(1)
+    val rankedBuckets = buckets.values
+        .map { accumulator ->
+            PaletteBucket(
+                color = accumulator.averageColor(),
+                coverage = accumulator.count.toFloat() / totalPixels.toFloat()
+            )
+        }
+        .sortedByDescending { bucket ->
+            bucket.coverage * (1.5f + paletteInterest(bucket.color) * 0.32f)
+        }
 
-    val selected = mutableListOf<Int>()
-    ranked.firstOrNull()?.let(selected::add)
+    val selected = mutableListOf<PaletteBucket>()
+    rankedBuckets.firstOrNull()?.let(selected::add)
 
-    while (selected.size < 3 && ranked.isNotEmpty()) {
-        val next = ranked
-            .filterNot { it in selected }
-            .maxByOrNull { paletteInterest(it) + minColorDistance(it, selected) / 510f }
+    while (selected.size < 4 && rankedBuckets.isNotEmpty()) {
+        val next = rankedBuckets
+            .filterNot { candidate -> selected.any { it.color == candidate.color } }
+            .maxByOrNull { candidate ->
+                candidate.coverage * 3.2f +
+                    paletteInterest(candidate.color) * 0.18f +
+                    minColorDistance(candidate.color, selected.map { it.color }) / 420f
+            }
             ?: break
         selected += next
     }
 
-    while (selected.size < 3) {
-        selected += selected.lastOrNull() ?: ranked.first()
+    while (selected.size < 4) {
+        val last = selected.lastOrNull()?.color ?: AndroidColor.argb(255, 182, 126, 126)
+        val fallbackBlend = if (selected.isEmpty()) {
+            last
+        } else {
+            blendColors(selected.first().color, last, 0.5f)
+        }
+        selected += PaletteBucket(fallbackBlend, 0f)
     }
 
-    return selected.take(3)
+    return selected.take(4).map { it.color }
 }
 
 private fun paletteInterest(color: Int): Float {
@@ -542,7 +675,7 @@ private fun paletteInterest(color: Int): Float {
     AndroidColor.colorToHSV(color, hsv)
     val saturation = hsv[1]
     val value = hsv[2]
-    return saturation * 1.15f + value * 0.35f
+    return saturation * 1.22f + value * 0.26f
 }
 
 private fun minColorDistance(color: Int, selected: List<Int>): Float {
@@ -556,32 +689,7 @@ private fun colorDistance(first: Int, second: Int): Float {
     val redDiff = AndroidColor.red(first) - AndroidColor.red(second)
     val greenDiff = AndroidColor.green(first) - AndroidColor.green(second)
     val blueDiff = AndroidColor.blue(first) - AndroidColor.blue(second)
-    return kotlin.math.sqrt((redDiff * redDiff + greenDiff * greenDiff + blueDiff * blueDiff).toDouble()).toFloat()
-}
-
-private fun sampledAverageColor(bitmap: Bitmap, centerX: Int, centerY: Int, radius: Int): Int {
-    var red = 0L
-    var green = 0L
-    var blue = 0L
-    var count = 0L
-
-    val startX = max(0, centerX - radius)
-    val endX = min(bitmap.width - 1, centerX + radius)
-    val startY = max(0, centerY - radius)
-    val endY = min(bitmap.height - 1, centerY + radius)
-
-    for (x in startX..endX step 2) {
-        for (y in startY..endY step 2) {
-            val color = bitmap.getPixel(x, y)
-            red += AndroidColor.red(color)
-            green += AndroidColor.green(color)
-            blue += AndroidColor.blue(color)
-            count++
-        }
-    }
-
-    if (count == 0L) return AndroidColor.argb(255, 182, 126, 126)
-    return AndroidColor.argb(255, (red / count).toInt(), (green / count).toInt(), (blue / count).toInt())
+    return sqrt((redDiff * redDiff + greenDiff * greenDiff + blueDiff * blueDiff).toDouble()).toFloat()
 }
 
 private fun withAlpha(color: Int, alpha: Int): Int {
@@ -593,6 +701,34 @@ private fun withAlpha(color: Int, alpha: Int): Int {
     )
 }
 
+private fun darkenColor(color: Int, amount: Float): Int {
+    val safeAmount = amount.coerceIn(0f, 1f)
+    return AndroidColor.argb(
+        AndroidColor.alpha(color),
+        (AndroidColor.red(color) * (1f - safeAmount)).toInt().coerceIn(0, 255),
+        (AndroidColor.green(color) * (1f - safeAmount)).toInt().coerceIn(0, 255),
+        (AndroidColor.blue(color) * (1f - safeAmount)).toInt().coerceIn(0, 255)
+    )
+}
+
+private fun preserveColorForWallpaper(color: Int, darkenAmount: Float): Int {
+    val safeAmount = darkenAmount.coerceIn(0f, 0.22f)
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color, hsv)
+    hsv[1] = (hsv[1] * 1.12f).coerceIn(0f, 1f)
+    hsv[2] = (hsv[2] * (1f - safeAmount)).coerceIn(0.22f, 1f)
+    return AndroidColor.HSVToColor(AndroidColor.alpha(color), hsv)
+}
+
+private fun enrichColorPresence(color: Int, factor: Float): Int {
+    val normalizedFactor = ((factor - 1f) / 0.65f).coerceIn(-1f, 1f)
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color, hsv)
+    hsv[1] = (hsv[1] * (1f + normalizedFactor * 0.48f) + max(0f, normalizedFactor) * 0.08f).coerceIn(0f, 1f)
+    hsv[2] = (hsv[2] * (1f + normalizedFactor * 0.10f)).coerceIn(0.18f, 1f)
+    return AndroidColor.HSVToColor(AndroidColor.alpha(color), hsv)
+}
+
 private fun blendColors(startColor: Int, endColor: Int, ratio: Float): Int {
     val safeRatio = ratio.coerceIn(0f, 1f)
     val inverse = 1f - safeRatio
@@ -602,6 +738,39 @@ private fun blendColors(startColor: Int, endColor: Int, ratio: Float): Int {
         (AndroidColor.green(startColor) * inverse + AndroidColor.green(endColor) * safeRatio).toInt(),
         (AndroidColor.blue(startColor) * inverse + AndroidColor.blue(endColor) * safeRatio).toInt()
     )
+}
+
+private fun quantizedColorKey(color: Int): Int {
+    val red = AndroidColor.red(color) / 22
+    val green = AndroidColor.green(color) / 22
+    val blue = AndroidColor.blue(color) / 22
+    return (red shl 16) or (green shl 8) or blue
+}
+
+private class BucketAccumulator {
+    var redSum = 0L
+    var greenSum = 0L
+    var blueSum = 0L
+    var count = 0
+
+    fun add(color: Int) {
+        redSum += AndroidColor.red(color)
+        greenSum += AndroidColor.green(color)
+        blueSum += AndroidColor.blue(color)
+        count += 1
+    }
+
+    fun averageColor(): Int {
+        if (count == 0) {
+            return AndroidColor.argb(255, 182, 126, 126)
+        }
+        return AndroidColor.argb(
+            255,
+            (redSum / count).toInt().coerceIn(0, 255),
+            (greenSum / count).toInt().coerceIn(0, 255),
+            (blueSum / count).toInt().coerceIn(0, 255)
+        )
+    }
 }
 
 private fun playerTextAnchorX(left: Float, right: Float, alignment: TextAlignmentOption): Float {
