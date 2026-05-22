@@ -316,7 +316,7 @@ object LiveWallpaperRenderer {
             maxCharactersBeforeMarquee = 29
         )
 
-        drawTimeline(canvas, rect, contentLeft, contentRight, timelineY, state)
+        drawTimeline(canvas, rect, contentLeft, contentRight, timelineY, state, calSans)
     }
 
     private fun drawTimeline(
@@ -325,7 +325,8 @@ object LiveWallpaperRenderer {
         left: Float,
         right: Float,
         centerY: Float,
-        state: PlaybackUiState
+        state: PlaybackUiState,
+        calSans: Typeface
     ) {
         val effectiveDuration = state.durationMs.coerceAtLeast(1L)
         val elapsed = if (state.isPlaying) {
@@ -337,12 +338,12 @@ object LiveWallpaperRenderer {
         val progress = (currentPosition.toFloat() / effectiveDuration.toFloat()).coerceIn(0f, 1f)
 
         val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.argb(88, 0, 0, 0)
+            color = AndroidColor.argb(120, 255, 255, 255)
             strokeWidth = rect.height() * 0.04f
             strokeCap = Paint.Cap.ROUND
         }
         val progressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.argb(210, 0, 0, 0)
+            color = AndroidColor.argb(235, 255, 255, 255)
             strokeWidth = rect.height() * 0.04f
             strokeCap = Paint.Cap.ROUND
         }
@@ -350,9 +351,9 @@ object LiveWallpaperRenderer {
         canvas.drawLine(left, centerY, left + (right - left) * progress, centerY, progressPaint)
 
         val timePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.argb(180, 30, 30, 30)
+            color = AndroidColor.argb(230, 255, 255, 255)
             textSize = rect.height() * 0.11f
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            typeface = calSans
         }
         canvas.drawText(formatTime(currentPosition), left, centerY - rect.height() * 0.07f, timePaint)
         timePaint.textAlign = Paint.Align.RIGHT
@@ -394,7 +395,12 @@ private fun drawAnimatedText(
     val spacing = paint.textSize * 1.8f
     val textWidth = paint.measureText(trimmed)
     val loopWidth = textWidth + spacing
-    val scroll = if (isPlaying) ((phase * paint.textSize * 1.65f) % loopWidth) else 0f
+    val scroll = if (isPlaying) {
+        val pixelsPerSecond = paint.textSize * 1.45f
+        ((SystemClock.elapsedRealtime() / 1000f) * pixelsPerSecond) % loopWidth
+    } else {
+        0f
+    }
 
     canvas.save()
     canvas.clipRect(left, baselineY - paint.textSize * 1.3f, right, baselineY + paint.textSize * 0.45f)

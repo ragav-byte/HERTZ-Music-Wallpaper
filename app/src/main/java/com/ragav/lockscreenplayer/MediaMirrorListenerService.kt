@@ -31,6 +31,7 @@ class MediaMirrorListenerService : NotificationListenerService() {
         super.onListenerConnected()
         val component = ComponentName(this, MediaMirrorListenerService::class.java)
         mediaSessionManager.addOnActiveSessionsChangedListener(sessionsChangedListener, component)
+        primeFromActiveNotifications()
         PlaybackRepository.attachController(selectPreferredController(mediaSessionManager.getActiveSessions(component)))
     }
 
@@ -52,8 +53,17 @@ class MediaMirrorListenerService : NotificationListenerService() {
     }
 
     private fun refreshSessions() {
+        primeFromActiveNotifications()
         val component = ComponentName(this, MediaMirrorListenerService::class.java)
         PlaybackRepository.attachController(selectPreferredController(mediaSessionManager.getActiveSessions(component)))
+    }
+
+    private fun primeFromActiveNotifications() {
+        runCatching {
+            activeNotifications
+                ?.sortedByDescending { it.postTime }
+                ?.forEach(::primeFromNotification)
+        }
     }
 
     private fun selectPreferredController(controllers: List<MediaController>): MediaController? {

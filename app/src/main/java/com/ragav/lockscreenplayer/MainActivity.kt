@@ -70,7 +70,7 @@ import com.ragav.lockscreenplayer.ui.theme.LockscreenPlayerTheme
 class MainActivity : ComponentActivity() {
     private var hasNotificationListenerAccess by mutableStateOf(false)
     private var statusMessage by mutableStateOf(
-        "Enable media access, then start your player and set Muse as your wallpaper."
+        "Enable media access, then start your player and set HERTZ as your wallpaper."
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
                     onOpenAppSettings = ::openAppSettings,
                     onEnableLiveWallpaper = ::enableLiveWallpaper,
                     onOpenSourceApp = ::openSourceApp,
+                    onOpenSupportEmail = ::openSupportEmail,
                     onSetCardOffset = PlaybackRepository::setCardOffset,
                     onSetCardScale = PlaybackRepository::setCardScale,
                     onSetPlayerCardWidthScale = PlaybackRepository::setPlayerCardWidthScale,
@@ -113,12 +114,12 @@ class MainActivity : ComponentActivity() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     "Enable notification access. If Android blocks it because this is a sideloaded app, open App settings, allow restricted settings, then return here."
                 } else {
-                    "Enable notification access so the wallpaper can read the current Apple Music song."
+                    "Enable notification access so the wallpaper can read the current song."
                 }
             }
 
             !PlaybackRepository.uiState.value.hasSourceSession -> {
-                "Media access is ready. Start Apple Music and keep the player visible for a moment, then come back here."
+                "Media access is ready. Start your music app and keep the player visible for a moment, then come back here."
             }
 
             else -> {
@@ -162,10 +163,10 @@ class MainActivity : ComponentActivity() {
 
         runCatching {
             startActivity(directIntent)
-            statusMessage = "Choose Muse and apply it. Some phones let you use it on the lock screen only, while others apply it to home and lock screen together."
+            statusMessage = "Choose HERTZ and apply it. Some phones let you use it on the lock screen only, while others apply it to home and lock screen together."
         }.recoverCatching {
             startActivity(chooserIntent)
-            statusMessage = "Open Muse in the wallpaper picker and apply it from there."
+            statusMessage = "Open HERTZ in the wallpaper picker and apply it from there."
         }.onFailure { error ->
             statusMessage = "Unable to open the live wallpaper picker: ${error.message ?: "Unknown error"}"
         }
@@ -178,6 +179,18 @@ class MainActivity : ComponentActivity() {
             startActivity(launchIntent)
         } else {
             statusMessage = "Couldn't open the music app from this phone right now."
+        }
+    }
+
+    private fun openSupportEmail() {
+        val emailIntent = Intent(Intent.ACTION_SENDTO).apply {
+            data = Uri.parse("mailto:ragavkrishna4535@gmail.com")
+            putExtra(Intent.EXTRA_SUBJECT, "HERTZ Support / Report a problem")
+        }
+        runCatching {
+            startActivity(emailIntent)
+        }.onFailure {
+            statusMessage = "No email app was found on this phone right now."
         }
     }
 
@@ -212,6 +225,7 @@ private fun WallpaperStudioScreen(
     onOpenAppSettings: () -> Unit,
     onEnableLiveWallpaper: () -> Unit,
     onOpenSourceApp: (String) -> Unit,
+    onOpenSupportEmail: () -> Unit,
     onSetCardOffset: (Float, Float) -> Unit,
     onSetCardScale: (Float) -> Unit,
     onSetPlayerCardWidthScale: (Float) -> Unit,
@@ -234,8 +248,8 @@ private fun WallpaperStudioScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             HeroCard(
-                title = "Muse",
-                subtitle = "YOUR MUSIC INSPIRED WALLPAPER"
+                title = "HERTZ",
+                subtitle = "MUSIC WALLPAPER"
             )
 
             StatusCard(statusMessage = statusMessage)
@@ -245,7 +259,7 @@ private fun WallpaperStudioScreen(
                 subtitle = if (hasNotificationListenerAccess) {
                     "The wallpaper is ready to read your active song."
                 } else {
-                    "Enable notification access so Muse can read the current song artwork and text."
+                    "Enable notification access so HERTZ can read the current song artwork and text."
                 }
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -441,7 +455,7 @@ private fun WallpaperStudioScreen(
 
             InfoCard(
                 title = "Live wallpaper",
-                subtitle = "Set it once from the wallpaper picker. After that, Muse updates when the song or layout changes."
+                subtitle = "Set it once from the wallpaper picker. After that, HERTZ updates when the song or layout changes."
             ) {
                 Button(
                     onClick = onEnableLiveWallpaper,
@@ -464,6 +478,27 @@ private fun WallpaperStudioScreen(
 
                 Text(
                     text = "Battery note: the motion only runs while the wallpaper is visible and music is actively playing. When the song pauses or the screen goes away, it settles into a static frame.",
+                    color = Color(0xFFD2D1DB),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            InfoCard(
+                title = "Support",
+                subtitle = "Need help or want to report a problem?"
+            ) {
+                OutlinedButton(
+                    onClick = onOpenSupportEmail,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
+                ) {
+                    Text("Email support")
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(
+                    text = "This opens your email app with the receiver set to ragavkrishna4535@gmail.com.",
                     color = Color(0xFFD2D1DB),
                     style = MaterialTheme.typography.bodySmall
                 )
