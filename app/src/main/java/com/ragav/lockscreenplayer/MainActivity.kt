@@ -296,7 +296,7 @@ private fun WallpaperStudioScreen(
         ) {
             HeroCard(
                 title = "HERTZ",
-                subtitle = "Your Music Wallpaper"
+                subtitle = "Your Lock Screen Never Sounded Better."
             )
 
             StatusCard(statusMessage = statusMessage)
