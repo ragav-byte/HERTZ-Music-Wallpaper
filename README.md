@@ -26,7 +26,7 @@ Swipe sideways to see the full gallery.
 
 ## Download APK
 
-[Download the latest debug APK](downloads/HERTZ-Music-Wallpaper-debug.apk)
+[Download the latest debug APK](https://github.com/ragav-byte/HERTZ-Music-Wallpaper/raw/main/downloads/HERTZ-Music-Wallpaper-debug.apk)
 
 This APK is included for testing before the broader app-store release.
 
