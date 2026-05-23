@@ -19,9 +19,15 @@ Release screenshots are stored in `screenshots/` so the README previews the app 
 
 Swipe sideways to see the full gallery.
 
-| Setup | Card visibility | Configuration | Preview | Apply wallpaper | Lock screen | Dark lock screen |
-| --- | --- | --- | --- | --- | --- | --- |
-| <img src="screenshots/app-requirements-current-playing.png" width="180" alt="Setup and current playing"> | <img src="screenshots/app-card-visibility.png" width="180" alt="Card visibility"> | <img src="screenshots/app-configuration.png" width="180" alt="Configuration controls"> | <img src="screenshots/app-preview.png" width="180" alt="Live wallpaper preview"> | <img src="screenshots/app-apply-wallpaper.png" width="180" alt="Apply wallpaper dialog"> | <img src="screenshots/lockscreen-pink-card.png" width="180" alt="Pink lock screen wallpaper"> | <img src="screenshots/lockscreen-dark-card.png" width="180" alt="Dark lock screen wallpaper"> |
+| Setup | Card visibility | Configuration | Preview | Apply wallpaper | Pink lock screen | Warm lock screen | Blue lock screen | Dark lock screen |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| <img src="screenshots/app-requirements-current-playing.png" width="180" alt="Setup and current playing"> | <img src="screenshots/app-card-visibility.png" width="180" alt="Card visibility"> | <img src="screenshots/app-configuration.png" width="180" alt="Configuration controls"> | <img src="screenshots/app-preview.png" width="180" alt="Live wallpaper preview"> | <img src="screenshots/app-apply-wallpaper.png" width="180" alt="Apply wallpaper dialog"> | <img src="screenshots/lockscreen-pink-card.png" width="180" alt="Pink lock screen wallpaper"> | <img src="screenshots/lockscreen-warm-card.png" width="180" alt="Warm lock screen wallpaper"> | <img src="screenshots/lockscreen-blue-card.png" width="180" alt="Blue lock screen wallpaper"> | <img src="screenshots/lockscreen-dark-card.png" width="180" alt="Dark lock screen wallpaper"> |
+
+## Download APK
+
+[Download the latest debug APK](downloads/HERTZ-Music-Wallpaper-debug.apk)
+
+This APK is included for testing before the broader app-store release.
 
 ## How HERTZ Gets Music Data
 
