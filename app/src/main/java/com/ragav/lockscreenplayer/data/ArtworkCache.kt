@@ -21,7 +21,7 @@ object ArtworkCache {
     private const val MAX_DISK_BYTES = 80L * 1024L * 1024L
     private const val STALE_AFTER_MS = 24L * 60L * 60L * 1000L
     private const val MAINTENANCE_INTERVAL_MS = 60L * 60L * 1000L
-    private const val MAX_ARTWORK_EDGE = 1600
+    private const val MAX_ARTWORK_EDGE = 512
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val memoryCache = object : LruCache<String, Bitmap>(MAX_MEMORY_BYTES) {

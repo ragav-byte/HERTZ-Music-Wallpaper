@@ -31,8 +31,8 @@ val AppTypography = Typography(
         lineHeight = 26.sp
     ),
     titleMedium = TextStyle(
-        fontFamily = Outfit,
-        fontWeight = FontWeight.Medium,
+        fontFamily = CalSans,
+        fontWeight = FontWeight.Normal,
         fontSize = 18.sp,
         lineHeight = 22.sp
     ),

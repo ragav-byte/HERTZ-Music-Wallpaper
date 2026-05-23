@@ -3,14 +3,11 @@ package com.ragav.lockscreenplayer
 import android.app.Notification
 import android.content.ComponentName
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.drawable.BitmapDrawable
-import android.graphics.drawable.Drawable
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Build
+import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import com.ragav.lockscreenplayer.data.PlaybackRepository
@@ -26,7 +23,6 @@ class MediaMirrorListenerService : NotificationListenerService() {
     private companion object {
         private const val APPLE_MUSIC_PACKAGE = "com.apple.android.music"
         private const val MEDIA_SESSION_EXTRA_KEY = "android.mediaSession"
-        private const val MAX_DRAWABLE_EDGE = 1600
         private val KNOWN_PLAYER_PACKAGES = setOf(
             APPLE_MUSIC_PACKAGE,
             "com.spotify.music",
@@ -38,11 +34,8 @@ class MediaMirrorListenerService : NotificationListenerService() {
     private lateinit var mediaSessionManager: MediaSessionManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var refreshBurstJob: Job? = null
-    private var continuousRefreshJob: Job? = null
     @Volatile
     private var activeMediaPackage: String? = null
-    @Volatile
-    private var lastArtworkNotificationKey: String? = null
 
     private val sessionsChangedListener = MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
         val preferredController = selectPreferredController(controllers.orEmpty())
@@ -63,7 +56,6 @@ class MediaMirrorListenerService : NotificationListenerService() {
             mediaSessionManager.addOnActiveSessionsChangedListener(sessionsChangedListener, component)
         }
         safeRefreshSessions()
-        startContinuousRefresh()
         scheduleRefreshBurst()
     }
 
@@ -72,7 +64,6 @@ class MediaMirrorListenerService : NotificationListenerService() {
             mediaSessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener)
         }
         refreshBurstJob?.cancel()
-        continuousRefreshJob?.cancel()
         activeMediaPackage = null
         PlaybackRepository.attachController(null)
         super.onListenerDisconnected()
@@ -81,7 +72,6 @@ class MediaMirrorListenerService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         sbn?.let {
             safePrimeNotificationText(it)
-            safePrimeNotificationArtworkAsync(it)
         }
         safeRefreshSessions()
         scheduleRefreshBurst()
@@ -94,7 +84,6 @@ class MediaMirrorListenerService : NotificationListenerService() {
 
     override fun onDestroy() {
         refreshBurstJob?.cancel()
-        continuousRefreshJob?.cancel()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -114,24 +103,13 @@ class MediaMirrorListenerService : NotificationListenerService() {
     private fun scheduleRefreshBurst() {
         refreshBurstJob?.cancel()
         refreshBurstJob = serviceScope.launch {
-            val refreshOffsetsMs = listOf(25L, 60L, 120L, 220L, 360L, 560L, 820L, 1_150L, 1_550L, 2_050L)
+            val refreshOffsetsMs = listOf(0L, 120L, 350L, 800L, 1_500L, 2_250L)
             refreshOffsetsMs.forEachIndexed { index, offsetMs ->
                 if (index > 0) {
                     val previous = refreshOffsetsMs[index - 1]
                     delay(offsetMs - previous)
                 }
                 safeRefreshSessions()
-            }
-        }
-    }
-
-    private fun startContinuousRefresh() {
-        if (continuousRefreshJob != null) return
-        continuousRefreshJob = serviceScope.launch {
-            while (true) {
-                safeRefreshSessions()
-                val delayMs = if (PlaybackRepository.uiState.value.hasSourceSession) 1_000L else 600L
-                delay(delayMs)
             }
         }
     }
@@ -154,7 +132,6 @@ class MediaMirrorListenerService : NotificationListenerService() {
 
             latestMediaNotifications.forEach { notification ->
                 safePrimeNotificationText(notification)
-                safePrimeNotificationArtworkAsync(notification)
             }
         }
     }
@@ -199,85 +176,58 @@ class MediaMirrorListenerService : NotificationListenerService() {
             packageName = sbn.packageName,
             title = title,
             artist = artist,
-            artwork = null
+            artwork = null,
+            isExplicit = notificationExplicitFlag(extras, title)
         )
     }
 
-    private fun primeNotificationArtwork(sbn: StatusBarNotification) {
-        if (!isLikelyMediaNotification(sbn)) return
-        val preferredPackage = activeMediaPackage
-        if (preferredPackage != null && sbn.packageName != preferredPackage) return
-        val extras = sbn.notification.extras ?: return
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
-        val artist = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
-            ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
-        val artwork = extractArtwork(sbn.notification) ?: return
-        PlaybackRepository.primeFromNotification(
-            packageName = sbn.packageName,
-            title = title,
-            artist = artist,
-            artwork = artwork
+    private fun notificationExplicitFlag(extras: Bundle, title: String?): Boolean {
+        val keys = listOf(
+            "android.media.IS_EXPLICIT",
+            "android.media.metadata.IS_EXPLICIT",
+            "android.media.extra.IS_EXPLICIT",
+            "androidx.media.IS_EXPLICIT",
+            "is_explicit",
+            "isExplicit"
         )
+        val exactMatch = keys.any { key -> bundleValueMeansExplicit(extras, key) }
+        if (exactMatch) return true
+
+        val fuzzyMatch = extras.keySet().any { key ->
+            val normalized = key.lowercase()
+            val looksRelevant = normalized.contains("explicit") ||
+                normalized.contains("advisory") ||
+                normalized.contains("rating")
+            looksRelevant && bundleValueMeansExplicit(extras, key)
+        }
+        if (fuzzyMatch) return true
+
+        return title.orEmpty()
+            .contains(Regex("""(^|[\s\[\(\-])(?:E|Explicit)([\s\]\)\-]|$)""", RegexOption.IGNORE_CASE))
+    }
+
+    private fun bundleValueMeansExplicit(bundle: Bundle, key: String): Boolean {
+        if (!bundle.containsKey(key)) return false
+        return when (val value = bundle.get(key)) {
+            is Boolean -> value
+            is Int -> value == 1
+            is Long -> value == 1L
+            is String -> value.isExplicitText()
+            is CharSequence -> value.toString().isExplicitText()
+            else -> false
+        }
+    }
+
+    private fun String.isExplicitText(): Boolean {
+        val text = trim()
+        return text.equals("true", ignoreCase = true) ||
+            text == "1" ||
+            text.equals("yes", ignoreCase = true) ||
+            text.contains("explicit", ignoreCase = true)
     }
 
     private fun safePrimeNotificationText(sbn: StatusBarNotification) {
         runCatching { primeNotificationText(sbn) }
-    }
-
-    private fun safePrimeNotificationArtworkAsync(sbn: StatusBarNotification) {
-        val key = notificationArtworkKey(sbn) ?: return
-        if (lastArtworkNotificationKey == key) return
-        lastArtworkNotificationKey = key
-        serviceScope.launch {
-            runCatching { primeNotificationArtwork(sbn) }
-        }
-    }
-
-    private fun notificationArtworkKey(sbn: StatusBarNotification): String? {
-        if (!isLikelyMediaNotification(sbn)) return null
-        val extras = sbn.notification.extras ?: return null
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
-        val artist = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
-            ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
-            ?: ""
-        return "${sbn.packageName}|$title|$artist|${sbn.postTime}"
-    }
-
-    @Suppress("DEPRECATION")
-    private fun extractArtwork(notification: Notification): Bitmap? {
-        val extras = notification.extras ?: return null
-        val directBitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            extras.getParcelable(Notification.EXTRA_PICTURE, Bitmap::class.java)
-                ?: extras.getParcelable(Notification.EXTRA_LARGE_ICON_BIG, Bitmap::class.java)
-                ?: extras.getParcelable(Notification.EXTRA_LARGE_ICON, Bitmap::class.java)
-        } else {
-            extras.getParcelable(Notification.EXTRA_PICTURE) as? Bitmap
-                ?: extras.getParcelable(Notification.EXTRA_LARGE_ICON_BIG) as? Bitmap
-                ?: extras.getParcelable(Notification.EXTRA_LARGE_ICON) as? Bitmap
-        }
-        if (directBitmap != null) return directBitmap
-
-        val largeIconDrawable = notification.getLargeIcon()?.loadDrawable(this)
-        if (largeIconDrawable != null) return largeIconDrawable.toBitmap()
-        return null
-    }
-
-    private fun Drawable.toBitmap(): Bitmap {
-        if (this is BitmapDrawable && bitmap != null) return bitmap
-        val rawWidth = intrinsicWidth.coerceAtLeast(1)
-        val rawHeight = intrinsicHeight.coerceAtLeast(1)
-        val scale = minOf(
-            1f,
-            MAX_DRAWABLE_EDGE.toFloat() / rawWidth.toFloat(),
-            MAX_DRAWABLE_EDGE.toFloat() / rawHeight.toFloat()
-        )
-        val width = (rawWidth * scale).toInt().coerceAtLeast(1)
-        val height = (rawHeight * scale).toInt().coerceAtLeast(1)
-        return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap ->
-            val canvas = Canvas(bitmap)
-            setBounds(0, 0, canvas.width, canvas.height)
-            draw(canvas)
-        }
     }
 
     private fun isLikelyMediaNotification(sbn: StatusBarNotification): Boolean {

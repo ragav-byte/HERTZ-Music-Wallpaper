@@ -1,22 +1,36 @@
 package com.ragav.lockscreenplayer.data
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.PlaybackState
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
+import androidx.core.graphics.drawable.toBitmap
+import coil.ImageLoader
+import coil.request.ImageRequest
+import coil.request.SuccessResult
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.max
 
 data class PlaybackUiState(
-    val title: String = "Start Apple Music",
+    val title: String = "Start playing your music",
     val artist: String = "The current song will appear here",
     val album: String = "",
     val sourceApp: String = "No player detected",
@@ -24,6 +38,7 @@ data class PlaybackUiState(
     val playbackDeviceLabel: String = "This device",
     val isExplicit: Boolean = false,
     val artworkBitmap: Bitmap? = null,
+    val artworkSignature: String = "",
     val hasSourceSession: Boolean = false,
     val isPlaying: Boolean = false,
     val playbackSpeed: Float = 0f,
@@ -32,14 +47,15 @@ data class PlaybackUiState(
     val positionMs: Long = 0L,
     val positionCapturedAtMs: Long = 0L,
     val cardOffsetX: Float = 0f,
-    val cardOffsetY: Float = 0f,
-    val cardScale: Float = 0.56f,
-    val playerCardWidthScale: Float = 0.84f,
-    val playerCardOffsetY: Float = 0f,
-    val cardCornerRadius: Float = 0.16f,
-    val playerCardFrost: Float = 0.58f,
+    val cardOffsetY: Float = 1.33f,
+    val cardScale: Float = 0.88f,
+    val playerCardWidthScale: Float = 0.86f,
+    val playerCardOffsetY: Float = -0.09f,
+    val cardCornerRadius: Float = 0.02f,
+    val playerCardFrost: Float = 0.25f,
     val showCardOnLockScreen: Boolean = true,
     val showCardOnHomeScreen: Boolean = false,
+    val cardPauseHoldMs: Long = 0L,
     val textOffsetX: Float = 0f,
     val textOffsetY: Float = 0f,
     val titleTextScale: Float = 1.0f,
@@ -49,6 +65,8 @@ data class PlaybackUiState(
     val fluidity: Float = 0.62f,
     val gradientBrightness: Float = 1.0f,
     val preserveArtworkOnReboot: Boolean = false,
+    val batteryPercent: Int = 100,
+    val cardsDisabledForBattery: Boolean = false,
     val textAlignment: TextAlignmentOption = TextAlignmentOption.CENTER,
     val trackSignature: String = "",
     val marqueeStartedAtMs: Long = 0L
@@ -61,7 +79,7 @@ enum class TextAlignmentOption {
 }
 
 object PlaybackRepository {
-    const val CARD_HIDE_DELAY_MS = 30_000L
+    val CARD_PAUSE_HOLD_OPTIONS_MS = listOf(0L, 5_000L, 10_000L, 20_000L, 30_000L, 60_000L, 300_000L, 600_000L)
     private const val CARD_STEP = 0.12f
     private const val TEXT_STEP = 0.08f
     private const val MIN_CARD_SCALE = 0.34f
@@ -94,6 +112,7 @@ object PlaybackRepository {
     private const val KEY_PLAYER_CARD_FROST = "player_card_frost"
     private const val KEY_SHOW_CARD_ON_LOCK_SCREEN = "show_card_on_lock_screen"
     private const val KEY_SHOW_CARD_ON_HOME_SCREEN = "show_card_on_home_screen"
+    private const val KEY_CARD_PAUSE_HOLD_MS = "card_pause_hold_ms"
     private const val KEY_TEXT_X = "text_x"
     private const val KEY_TEXT_Y = "text_y"
     private const val KEY_TITLE_TEXT_SCALE = "title_text_scale"
@@ -107,32 +126,52 @@ object PlaybackRepository {
     private const val DURATION_CACHE_PREFIX = "duration_cache_"
     private const val APPLE_MUSIC_PACKAGE = "com.apple.android.music"
     private const val NEW_TRACK_POSITION_GRACE_MS = 5_000L
+    private const val SAME_TRACK_RESTART_WINDOW_MS = 2_500L
+    private const val SAME_TRACK_RESTART_MIN_POSITION_MS = 6_000L
+    private const val BACKWARD_SEEK_THRESHOLD_MS = 5_000L
+    private const val TARGET_ARTWORK_SIZE = 512
 
     private val mutableUiState = MutableStateFlow(PlaybackUiState())
     val uiState: StateFlow<PlaybackUiState> = mutableUiState.asStateFlow()
 
+    private val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var currentController: MediaController? = null
     private var appContext: Context? = null
+    private var imageLoader: ImageLoader? = null
+    private var batteryReceiverRegistered = false
+    @Volatile
+    private var activeArtworkRequestKey: String? = null
+
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateBatteryState(intent)
+        }
+    }
 
     fun initialize(context: Context) {
         if (appContext != null) return
         appContext = context.applicationContext
+        imageLoader = ImageLoader.Builder(context.applicationContext)
+            .crossfade(false)
+            .build()
         val prefs = requirePrefs()
         val preserveArtworkOnReboot = prefs.getBoolean(KEY_PRESERVE_ARTWORK_ON_REBOOT, false)
         ArtworkCache.initialize(context.applicationContext, preserveArtworkOnReboot)
+        registerBatteryReceiver(context.applicationContext)
         mutableUiState.value = mutableUiState.value.copy(
             cardOffsetX = prefs.getFloat(KEY_CARD_X, 0f).coerceIn(CARD_X_MIN, CARD_X_MAX),
-            cardOffsetY = prefs.getFloat(KEY_CARD_Y, 0f).coerceIn(CARD_Y_MIN, CARD_Y_MAX),
-            cardScale = prefs.getFloat(KEY_CARD_SCALE, 0.56f).coerceIn(MIN_CARD_SCALE, MAX_CARD_SCALE),
-            playerCardWidthScale = prefs.getFloat(KEY_PLAYER_CARD_WIDTH, 0.84f)
+            cardOffsetY = prefs.getFloat(KEY_CARD_Y, 1.33f).coerceIn(CARD_Y_MIN, CARD_Y_MAX),
+            cardScale = prefs.getFloat(KEY_CARD_SCALE, 0.88f).coerceIn(MIN_CARD_SCALE, MAX_CARD_SCALE),
+            playerCardWidthScale = prefs.getFloat(KEY_PLAYER_CARD_WIDTH, 0.86f)
                 .coerceIn(MIN_PLAYER_CARD_WIDTH, MAX_PLAYER_CARD_WIDTH),
-            playerCardOffsetY = prefs.getFloat(KEY_PLAYER_CARD_OFFSET_Y, 0f)
+            playerCardOffsetY = prefs.getFloat(KEY_PLAYER_CARD_OFFSET_Y, -0.09f)
                 .coerceIn(MIN_PLAYER_CARD_OFFSET_Y, MAX_PLAYER_CARD_OFFSET_Y),
-            cardCornerRadius = prefs.getFloat(KEY_CARD_RADIUS, 0.16f).coerceIn(MIN_CARD_RADIUS, MAX_CARD_RADIUS),
-            playerCardFrost = prefs.getFloat(KEY_PLAYER_CARD_FROST, 0.58f)
+            cardCornerRadius = prefs.getFloat(KEY_CARD_RADIUS, 0.02f).coerceIn(MIN_CARD_RADIUS, MAX_CARD_RADIUS),
+            playerCardFrost = prefs.getFloat(KEY_PLAYER_CARD_FROST, 0.25f)
                 .coerceIn(MIN_PLAYER_CARD_FROST, MAX_PLAYER_CARD_FROST),
             showCardOnLockScreen = prefs.getBoolean(KEY_SHOW_CARD_ON_LOCK_SCREEN, true),
             showCardOnHomeScreen = prefs.getBoolean(KEY_SHOW_CARD_ON_HOME_SCREEN, false),
+            cardPauseHoldMs = normalizedPauseHoldMs(prefs.getLong(KEY_CARD_PAUSE_HOLD_MS, 0L)),
             textOffsetX = prefs.getFloat(KEY_TEXT_X, 0f).coerceIn(TEXT_X_MIN, TEXT_X_MAX),
             textOffsetY = prefs.getFloat(KEY_TEXT_Y, 0f).coerceIn(TEXT_Y_MIN, TEXT_Y_MAX),
             titleTextScale = prefs.getFloat(KEY_TITLE_TEXT_SCALE, 1.0f).coerceIn(MIN_TEXT_SCALE, MAX_TEXT_SCALE),
@@ -176,6 +215,12 @@ object PlaybackRepository {
 
     fun refreshCurrentPlayback() {
         syncFromController(currentController)
+    }
+
+    fun refreshBatteryState() {
+        val context = appContext ?: return
+        val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        updateBatteryState(batteryIntent)
     }
 
     fun moveCard(dx: Int, dy: Int) {
@@ -261,6 +306,13 @@ object PlaybackRepository {
         persistLayout()
     }
 
+    fun setCardPauseHoldMs(durationMs: Long) {
+        mutableUiState.update { state ->
+            state.copy(cardPauseHoldMs = normalizedPauseHoldMs(durationMs))
+        }
+        persistLayout()
+    }
+
     fun setTitleTextScale(scale: Float) {
         mutableUiState.update { state ->
             state.copy(titleTextScale = scale.coerceIn(MIN_TEXT_SCALE, MAX_TEXT_SCALE))
@@ -322,14 +374,15 @@ object PlaybackRepository {
         mutableUiState.update { state ->
             state.copy(
                 cardOffsetX = 0f,
-                cardOffsetY = 0f,
-                cardScale = 0.56f,
-                playerCardWidthScale = 0.84f,
-                playerCardOffsetY = 0f,
-                cardCornerRadius = 0.16f,
-                playerCardFrost = 0.58f,
+                cardOffsetY = 1.33f,
+                cardScale = 0.88f,
+                playerCardWidthScale = 0.86f,
+                playerCardOffsetY = -0.09f,
+                cardCornerRadius = 0.02f,
+                playerCardFrost = 0.25f,
                 showCardOnLockScreen = true,
                 showCardOnHomeScreen = false,
+                cardPauseHoldMs = 0L,
                 textOffsetX = 0f,
                 textOffsetY = 0f,
                 titleTextScale = 1.0f,
@@ -350,7 +403,8 @@ object PlaybackRepository {
         packageName: String,
         title: String?,
         artist: String?,
-        artwork: Bitmap?
+        artwork: Bitmap?,
+        isExplicit: Boolean? = null
     ) {
         val cleanTitle = title?.trim().orEmpty()
         val cleanArtist = artist?.trim().orEmpty()
@@ -381,11 +435,26 @@ object PlaybackRepository {
                 if (artwork != null) {
                     ArtworkCache.storeAsync(cacheKeys, artwork)
                 }
-                val explicit = inferExplicitFlag(title = updatedTitle, metadata = null, extras = null)
+                val explicit = isExplicit == true || inferExplicitFlag(title = updatedTitle, metadata = null, extras = null)
+                if (state.hasSourceSession && state.sourcePackage == packageName) {
+                    return@update if (explicit && !state.isExplicit && !signatureChanged) {
+                        state.copy(isExplicit = true)
+                    } else {
+                        state
+                    }
+                }
                 val resolvedArtwork = if (signatureChanged) {
-                    memoryArtwork ?: artwork
+                    memoryArtwork ?: artwork ?: state.artworkBitmap
                 } else {
                     chooseSharperArtwork(state.artworkBitmap, memoryArtwork ?: artwork)
+                }
+                val resolvedArtworkSignature = if (
+                    resolvedArtwork != null &&
+                    (resolvedArtwork === memoryArtwork || resolvedArtwork === artwork)
+                ) {
+                    updatedSignature
+                } else {
+                    state.artworkSignature
                 }
                 val resolvedExplicit = explicit || (!signatureChanged && state.isExplicit)
                 val resolvedDuration = if (signatureChanged) cachedDuration ?: 0L else cachedDuration ?: state.durationMs
@@ -405,6 +474,7 @@ object PlaybackRepository {
                     sourcePackage = if (state.sourcePackage.isBlank()) packageName else state.sourcePackage,
                     isExplicit = resolvedExplicit,
                     artworkBitmap = resolvedArtwork,
+                    artworkSignature = resolvedArtworkSignature,
                     durationMs = resolvedDuration,
                     positionMs = if (signatureChanged) 0L else state.positionMs,
                     positionCapturedAtMs = if (signatureChanged) now else state.positionCapturedAtMs,
@@ -440,6 +510,7 @@ object PlaybackRepository {
         val trackTitle = description?.title?.toString().orEmpty().ifBlank { uiState.value.title }
         val trackArtist = description?.subtitle?.toString().orEmpty().ifBlank { uiState.value.artist }
         val trackAlbum = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty()
+        val artworkUri = metadata?.preferredArtworkUri()
         val metadataArtwork = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
@@ -455,38 +526,64 @@ object PlaybackRepository {
         val rawPosition = playbackState?.currentPositionMs(playbackSpeed)
         val metadataDuration = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.coerceAtLeast(0L)
         val cachedDuration = cachedDurationMs(cacheKeys)
-        if (metadataArtwork != null) {
-            ArtworkCache.storeAsync(cacheKeys, metadataArtwork)
-        }
         if (metadataDuration != null && metadataDuration > 0L) {
             rememberDuration(cacheKeys, metadataDuration)
         }
+        val immediateArtwork = metadataArtwork?.resizedForWallpaper()
+        if (immediateArtwork != null) {
+            ArtworkCache.storeAsync(cacheKeys, immediateArtwork)
+        }
         val memoryArtwork = ArtworkCache.getMemorySync(cacheKeys)
+        requestArtworkLoad(
+            signature = signature,
+            cacheKeys = cacheKeys,
+            uri = artworkUri,
+            fallbackBitmap = metadataArtwork
+        )
         val explicit = inferExplicitFlag(
             title = trackTitle,
             metadata = metadata,
             extras = description?.extras
+        ) || inferExplicitFlag(
+            title = trackTitle,
+            metadata = metadata,
+            extras = playbackState?.extras
         )
 
         mutableUiState.update { state ->
             val now = SystemClock.elapsedRealtime()
             val signatureChanged = state.trackSignature != signature
+            val predictedPosition = if (state.isPlaying) {
+                state.positionMs + ((now - state.positionCapturedAtMs).coerceAtLeast(0L) * state.playbackSpeed).toLong()
+            } else {
+                state.positionMs
+            }
             val resolvedPosition = when {
                 signatureChanged -> rawPosition?.takeIf { it <= NEW_TRACK_POSITION_GRACE_MS } ?: 0L
+                rawPosition != null && isPlayingNow && state.isPlaying && rawPosition < predictedPosition -> {
+                    val backwardDelta = predictedPosition - rawPosition
+                    val restartedNearBeginning = rawPosition <= SAME_TRACK_RESTART_WINDOW_MS &&
+                        predictedPosition >= SAME_TRACK_RESTART_MIN_POSITION_MS
+                    if (restartedNearBeginning || backwardDelta >= BACKWARD_SEEK_THRESHOLD_MS) {
+                        rawPosition
+                    } else {
+                        predictedPosition
+                    }
+                }
                 rawPosition != null -> rawPosition
                 else -> state.positionMs
             }
             val resolvedDuration = metadataDuration ?: cachedDuration ?: if (signatureChanged) 0L else state.durationMs
-            val artworkCandidate = metadataArtwork ?: memoryArtwork
+            val artworkCandidate = memoryArtwork ?: immediateArtwork
             val earlyTrackArtworkWindow = now - state.marqueeStartedAtMs <= 3_000L
             val resolvedArtwork = if (signatureChanged) {
+                artworkCandidate ?: state.artworkBitmap
+            } else if (artworkCandidate != null && earlyTrackArtworkWindow && artworkCandidate !== state.artworkBitmap) {
                 artworkCandidate
-            } else if (metadataArtwork != null && earlyTrackArtworkWindow && metadataArtwork !== state.artworkBitmap) {
-                metadataArtwork
-            } else if (metadataArtwork != null) {
+            } else if (artworkCandidate != null) {
                 chooseSessionArtwork(
                     current = state.artworkBitmap,
-                    candidate = metadataArtwork
+                    candidate = artworkCandidate
                 )
             } else {
                 chooseSharperArtwork(
@@ -494,12 +591,12 @@ object PlaybackRepository {
                     candidate = artworkCandidate
                 )
             }
-            val resolvedExplicit = explicit || (!signatureChanged && state.isExplicit)
-            val predictedPosition = if (state.isPlaying) {
-                state.positionMs + ((now - state.positionCapturedAtMs).coerceAtLeast(0L) * state.playbackSpeed).toLong()
+            val resolvedArtworkSignature = if (resolvedArtwork != null && resolvedArtwork === artworkCandidate) {
+                signature
             } else {
-                state.positionMs
+                state.artworkSignature
             }
+            val resolvedExplicit = explicit || (!signatureChanged && state.isExplicit)
             val positionDrift = rawPosition?.let { abs(it - predictedPosition) } ?: 0L
             val onlyPlaybackTick = !signatureChanged &&
                 isPlayingNow &&
@@ -524,6 +621,7 @@ object PlaybackRepository {
                 playbackDeviceLabel = playbackDeviceLabel(controller),
                 isExplicit = resolvedExplicit,
                 artworkBitmap = resolvedArtwork,
+                artworkSignature = resolvedArtworkSignature,
                 hasSourceSession = true,
                 isPlaying = isPlayingNow,
                 playbackSpeed = playbackSpeed,
@@ -538,7 +636,134 @@ object PlaybackRepository {
     }
 
     fun shouldShowCard(state: PlaybackUiState = uiState.value): Boolean {
-        return state.hasSourceSession && state.isPlaying
+        if (!state.hasSourceSession || state.cardsDisabledForBattery) return false
+        if (state.isPlaying) return true
+        if (state.cardPauseHoldMs <= 0L || state.pausedAtMs <= 0L) return false
+        val pausedForMs = SystemClock.elapsedRealtime() - state.pausedAtMs
+        return pausedForMs in 0..state.cardPauseHoldMs
+    }
+
+    fun remainingCardPauseHoldMs(state: PlaybackUiState = uiState.value): Long {
+        if (state.isPlaying || state.cardPauseHoldMs <= 0L || state.pausedAtMs <= 0L) return 0L
+        return (state.cardPauseHoldMs - (SystemClock.elapsedRealtime() - state.pausedAtMs)).coerceAtLeast(0L)
+    }
+
+    private fun registerBatteryReceiver(context: Context) {
+        if (batteryReceiverRegistered) return
+        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        val batteryIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(batteryReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            context.registerReceiver(batteryReceiver, filter)
+        }
+        batteryReceiverRegistered = true
+        updateBatteryState(batteryIntent)
+    }
+
+    private fun updateBatteryState(intent: Intent?) {
+        val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        if (level < 0 || scale <= 0) return
+        val percent = ((level * 100f) / scale.toFloat()).toInt().coerceIn(0, 100)
+        mutableUiState.update { state ->
+            state.copy(
+                batteryPercent = percent,
+                cardsDisabledForBattery = percent <= 20
+            )
+        }
+    }
+
+    private fun requestArtworkLoad(
+        signature: String,
+        cacheKeys: List<String>,
+        uri: String?,
+        fallbackBitmap: Bitmap?
+    ) {
+        if (signature.isBlank() || (uri.isNullOrBlank() && fallbackBitmap == null)) return
+        val context = appContext ?: return
+        val loader = imageLoader ?: return
+        val requestKey = listOf(
+            signature,
+            uri.orEmpty(),
+            fallbackBitmap?.width?.toString().orEmpty(),
+            fallbackBitmap?.height?.toString().orEmpty()
+        ).joinToString("|")
+        if (activeArtworkRequestKey == requestKey) return
+        activeArtworkRequestKey = requestKey
+
+        artworkScope.launch {
+            val loadedArtwork = if (!uri.isNullOrBlank()) {
+                loadArtworkFromUri(context, loader, signature, uri) ?: fallbackBitmap?.resizedForWallpaper()
+            } else {
+                fallbackBitmap?.resizedForWallpaper()
+            }
+
+            if (loadedArtwork != null) {
+                ArtworkCache.storeAsync(cacheKeys, loadedArtwork)
+                mutableUiState.update { state ->
+                    if (state.trackSignature != signature) {
+                        state
+                    } else {
+                        val chosenArtwork = if (state.artworkSignature == signature) {
+                            chooseSessionArtwork(state.artworkBitmap, loadedArtwork)
+                        } else {
+                            loadedArtwork
+                        }
+                        if (chosenArtwork === state.artworkBitmap && state.artworkSignature == signature) {
+                            state
+                        } else {
+                            state.copy(
+                                artworkBitmap = chosenArtwork,
+                                artworkSignature = signature
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (activeArtworkRequestKey == requestKey) {
+                activeArtworkRequestKey = null
+            }
+        }
+    }
+
+    private suspend fun loadArtworkFromUri(
+        context: Context,
+        loader: ImageLoader,
+        signature: String,
+        uri: String
+    ): Bitmap? {
+        val request = ImageRequest.Builder(context)
+            .data(uri)
+            .size(TARGET_ARTWORK_SIZE, TARGET_ARTWORK_SIZE)
+            .allowHardware(false)
+            .memoryCacheKey(signature)
+            .diskCacheKey(signature)
+            .build()
+        val result = loader.execute(request) as? SuccessResult ?: return null
+        val drawable = result.drawable
+        val bitmap = if (drawable is BitmapDrawable) {
+            drawable.bitmap
+        } else {
+            drawable.toBitmap()
+        }
+        return bitmap.resizedForWallpaper()
+    }
+
+    private fun Bitmap.resizedForWallpaper(): Bitmap {
+        val largestEdge = max(width, height).coerceAtLeast(1)
+        if (largestEdge <= TARGET_ARTWORK_SIZE) return this
+        val scale = TARGET_ARTWORK_SIZE.toFloat() / largestEdge.toFloat()
+        val targetWidth = (width * scale).toInt().coerceAtLeast(1)
+        val targetHeight = (height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(this, targetWidth, targetHeight, true)
+    }
+
+    private fun MediaMetadata.preferredArtworkUri(): String? {
+        return getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)?.takeIf { it.isNotBlank() }
+            ?: getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)?.takeIf { it.isNotBlank() }
+            ?: getString(MediaMetadata.METADATA_KEY_ART_URI)?.takeIf { it.isNotBlank() }
     }
 
     private fun artworkCacheKeys(
@@ -619,28 +844,62 @@ object PlaybackRepository {
             "isExplicit"
         )
 
-        val extrasFlag = explicitExtraKeys.any { key ->
-            val bundle = extras ?: return@any false
-            when {
-                bundle.containsKey(key) && bundle.getBoolean(key) -> true
-                bundle.containsKey(key) && bundle.getInt(key, 0) == 1 -> true
-                bundle.containsKey(key) && bundle.getLong(key, 0L) == 1L -> true
-                bundle.containsKey(key) && bundle.getString(key).equals("true", ignoreCase = true) -> true
-                else -> false
+        val extrasFlag = extras?.let { bundle ->
+            explicitExtraKeys.any { key ->
+                bundleValueMeansExplicit(bundle, key)
+            } || bundle.keySet().any { key ->
+                val normalized = key.lowercase()
+                val looksRelevant = normalized.contains("explicit") ||
+                    normalized.contains("advisory") ||
+                    normalized.contains("rating")
+                looksRelevant && bundleValueMeansExplicit(bundle, key)
             }
-        }
+        } ?: false
         if (extrasFlag) return true
 
         val metadataFlag = metadata?.run {
             keySet().any { key ->
                 val normalized = key.lowercase()
-                if (!normalized.contains("explicit")) return@any false
-                getLong(key) == 1L || getString(key).equals("true", ignoreCase = true)
+                val looksRelevant = normalized.contains("explicit") ||
+                    normalized.contains("advisory") ||
+                    normalized.contains("rating")
+                if (!looksRelevant) return@any false
+                getLong(key) == 1L || getString(key).isExplicitText()
             }
         } ?: false
         if (metadataFlag) return true
 
-        return Regex("""(^|[\s\[\(\-])E([\s\]\)\-]|$)""", RegexOption.IGNORE_CASE).containsMatchIn(title)
+        return title.hasExplicitMarker()
+    }
+
+    private fun bundleValueMeansExplicit(bundle: Bundle, key: String): Boolean {
+        if (!bundle.containsKey(key)) return false
+        return when (val value = bundle.get(key)) {
+            is Boolean -> value
+            is Int -> value == 1
+            is Long -> value == 1L
+            is String -> value.isExplicitText()
+            is CharSequence -> value.toString().isExplicitText()
+            else -> false
+        }
+    }
+
+    private fun String?.isExplicitText(): Boolean {
+        val text = this?.trim().orEmpty()
+        if (text.isBlank()) return false
+        return text.equals("true", ignoreCase = true) ||
+            text == "1" ||
+            text.equals("yes", ignoreCase = true) ||
+            text.contains("explicit", ignoreCase = true)
+    }
+
+    private fun String.hasExplicitMarker(): Boolean {
+        return Regex("""(^|[\s\[\(\-])(?:E|Explicit)([\s\]\)\-]|$)""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(this)
+    }
+
+    private fun normalizedPauseHoldMs(durationMs: Long): Long {
+        return CARD_PAUSE_HOLD_OPTIONS_MS.minByOrNull { abs(it - durationMs) } ?: 0L
     }
 
     private fun persistLayout() {
@@ -656,6 +915,7 @@ object PlaybackRepository {
             .putFloat(KEY_PLAYER_CARD_FROST, state.playerCardFrost)
             .putBoolean(KEY_SHOW_CARD_ON_LOCK_SCREEN, state.showCardOnLockScreen)
             .putBoolean(KEY_SHOW_CARD_ON_HOME_SCREEN, state.showCardOnHomeScreen)
+            .putLong(KEY_CARD_PAUSE_HOLD_MS, state.cardPauseHoldMs)
             .putFloat(KEY_TEXT_X, state.textOffsetX)
             .putFloat(KEY_TEXT_Y, state.textOffsetY)
             .putFloat(KEY_TITLE_TEXT_SCALE, state.titleTextScale)

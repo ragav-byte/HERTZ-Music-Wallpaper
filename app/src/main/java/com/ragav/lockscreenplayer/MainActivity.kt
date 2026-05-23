@@ -35,12 +35,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CenterFocusStrong
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Wallpaper
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +56,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -112,6 +116,7 @@ class MainActivity : ComponentActivity() {
                     onSetPlayerCardOffsetY = PlaybackRepository::setPlayerCardOffsetY,
                     onSetCardCornerRadius = PlaybackRepository::setCardCornerRadius,
                     onSetPlayerCardFrost = PlaybackRepository::setPlayerCardFrost,
+                    onSetCardPauseHoldMs = PlaybackRepository::setCardPauseHoldMs,
                     onSetTitleTextScale = PlaybackRepository::setTitleTextScale,
                     onSetArtistTextScale = PlaybackRepository::setArtistTextScale,
                     onSetBlurAmount = PlaybackRepository::setBlurAmount,
@@ -127,6 +132,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         syncPermissionState()
+        PlaybackRepository.refreshBatteryState()
         requestListenerRebindIfPossible()
                     statusMessage = when {
             !hasNotificationListenerAccess -> {
@@ -267,6 +273,7 @@ private fun WallpaperStudioScreen(
     onSetPlayerCardOffsetY: (Float) -> Unit,
     onSetCardCornerRadius: (Float) -> Unit,
     onSetPlayerCardFrost: (Float) -> Unit,
+    onSetCardPauseHoldMs: (Long) -> Unit,
     onSetTitleTextScale: (Float) -> Unit,
     onSetArtistTextScale: (Float) -> Unit,
     onSetBlurAmount: (Float) -> Unit,
@@ -293,6 +300,19 @@ private fun WallpaperStudioScreen(
             )
 
             StatusCard(statusMessage = statusMessage)
+
+            if (playbackState.cardsDisabledForBattery) {
+                InfoCard(
+                    title = "Battery protection",
+                    subtitle = "Battery is ${playbackState.batteryPercent}%. HERTZ keeps the lightweight gradient active, but hides music cards at 20% or below to reduce heat and battery drain."
+                ) {
+                    Text(
+                        text = "Cards will return automatically when your battery goes above 20%.",
+                        color = Color(0xFFE8E8F0),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
 
             InfoCard(
                 title = "Requirements",
@@ -354,6 +374,28 @@ private fun WallpaperStudioScreen(
                 playbackState = playbackState,
                 onOpenSourceApp = onOpenSourceApp
             )
+
+            InfoCard(
+                title = "Card visibility",
+                subtitle = "Choose how long the artwork and text cards stay visible after pausing."
+            ) {
+                Text(
+                    text = "Card stay after pause",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                PauseHoldSelector(
+                    selectedDurationMs = playbackState.cardPauseHoldMs,
+                    onDurationSelected = onSetCardPauseHoldMs
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = pauseHoldDescription(playbackState.cardPauseHoldMs),
+                    color = Color(0xFFD2D1DB),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
 
             InfoCard(
                 title = "Configuration",
@@ -551,7 +593,7 @@ private fun WallpaperStudioScreen(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 Text(
-                    text = "Battery note: the motion only runs while the wallpaper is visible and music is actively playing. When the song pauses or the screen goes away, it settles into a static frame.",
+                    text = "Battery note: the music cards automatically hide at 20% battery or below. Motion only runs while the wallpaper is visible and music is actively playing; otherwise it settles into a static frame.",
                     color = Color(0xFFD2D1DB),
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -605,7 +647,7 @@ private fun AbsoluteOffsetControls(
     Text(
         text = "$xLabel ${(xValue * 100).toInt()}%",
         color = Color(0xFFE8E8F0),
-        style = MaterialTheme.typography.bodyMedium
+        style = MaterialTheme.typography.titleMedium
     )
     AppSlider(
         value = xValue,
@@ -616,7 +658,7 @@ private fun AbsoluteOffsetControls(
     Text(
         text = "$yLabel ${(yValue * 100).toInt()}%",
         color = Color(0xFFE8E8F0),
-        style = MaterialTheme.typography.bodyMedium
+        style = MaterialTheme.typography.titleMedium
     )
     AppSlider(
         value = yValue,
@@ -787,7 +829,7 @@ private fun CurrentPlayingCard(
         subtitle = if (playbackState.hasSourceSession) {
             "Colors are pulled from the current cover art."
         } else {
-            "Start Apple Music and the artwork will appear here."
+            "Start playing your music and the artwork will appear here."
         }
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -842,14 +884,14 @@ private fun CurrentPlayingCard(
                         )
                     }
                     if (playbackState.isExplicit) {
-                        ExplicitBadge()
+                        ExplicitTagBadge()
                     }
                 }
                 Text(
                     text = playbackState.artist,
-                    color = Color.White.copy(alpha = 0.7f),
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
+                    color = Color.White.copy(alpha = 0.65f),
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Normal,
                         fontSize = 11.sp * playbackState.artistTextScale
                     ),
                     textAlign = TextAlign.Left,
@@ -883,23 +925,6 @@ private fun CurrentPlayingCard(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun ExplicitBadge() {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(5.dp))
-            .background(Color.White.copy(alpha = 0.16f))
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = "E",
-            color = Color.White,
-            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
-        )
     }
 }
 
@@ -941,15 +966,119 @@ private fun SizePresetChoice(
                 contentColor = Color(0xFF111111)
             )
         ) {
-            Text(label)
+            ButtonLabel(label)
         }
     } else {
         OutlinedButton(
             onClick = onClick,
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
         ) {
-            Text(label)
+            ButtonLabel(label)
         }
+    }
+}
+
+@Composable
+private fun PauseHoldSelector(
+    selectedDurationMs: Long,
+    onDurationSelected: (Long) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(percent = 3),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
+        ) {
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                ButtonLabel(
+                    text = pauseHoldMenuLabel(selectedDurationMs),
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
+                )
+                Icon(
+                    imageVector = Icons.Rounded.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .size(20.dp),
+                    tint = Color(0xFFD8D6E4)
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier
+                .clip(RoundedCornerShape(percent = 3))
+                .background(Color(0xF0101012))
+        ) {
+            PlaybackRepository.CARD_PAUSE_HOLD_OPTIONS_MS.forEach { durationMs ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = pauseHoldMenuLabel(durationMs),
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.sp)
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onDurationSelected(durationMs)
+                    }
+                )
+            }
+        }
+    }
+}
+
+private fun pauseHoldLabel(durationMs: Long): String {
+    return when (durationMs) {
+        0L -> "Now"
+        5_000L -> "5s"
+        10_000L -> "10s"
+        20_000L -> "20s"
+        30_000L -> "30s"
+        60_000L -> "1m"
+        300_000L -> "5m"
+        600_000L -> "10m"
+        else -> "${durationMs / 1000L}s"
+    }
+}
+
+private fun pauseHoldMenuLabel(durationMs: Long): String {
+    return if (durationMs <= 0L) {
+        "Immediately"
+    } else {
+        "${pauseHoldLabel(durationMs)} after pause"
+    }
+}
+
+private fun pauseHoldDescription(durationMs: Long): String {
+    return if (durationMs <= 0L) {
+        "Cards hide immediately when playback pauses or the player closes."
+    } else {
+        "After pausing, cards stay for ${pauseHoldLabel(durationMs)} and then disappear without a fade."
+    }
+}
+
+@Composable
+private fun ExplicitTagBadge() {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color.White.copy(alpha = 0.20f))
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "E",
+            color = Color.White.copy(alpha = 0.94f),
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = 10.sp)
+        )
     }
 }
 
@@ -1000,14 +1129,14 @@ private fun AlignmentChoice(
                 contentColor = Color(0xFF111111)
             )
         ) {
-            Text(label)
+            ButtonLabel(label)
         }
     } else {
         OutlinedButton(
             onClick = onClick,
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
         ) {
-            Text(label)
+            ButtonLabel(label)
         }
     }
 }
@@ -1044,7 +1173,8 @@ private fun WallpaperPreviewCard(playbackState: PlaybackUiState) {
         playbackState.playerCardOffsetY,
         playbackState.playerCardFrost,
         playbackState.showCardOnLockScreen,
-        playbackState.showCardOnHomeScreen
+        playbackState.showCardOnHomeScreen,
+        playbackState.cardsDisabledForBattery
     ) {
         value = withContext(Dispatchers.Default) {
             LiveWallpaperRenderer.render(
@@ -1053,7 +1183,8 @@ private fun WallpaperPreviewCard(playbackState: PlaybackUiState) {
                 width = 540,
                 height = 1170,
                 phase = if (playbackState.isPlaying) playbackState.fluidity * 4f else 0f,
-                drawCards = playbackState.showCardOnLockScreen || playbackState.showCardOnHomeScreen
+                drawCards = !playbackState.cardsDisabledForBattery &&
+                    (playbackState.showCardOnLockScreen || playbackState.showCardOnHomeScreen)
             )
         }
     }
@@ -1362,7 +1493,11 @@ private fun ButtonLabel(
         text = text,
         modifier = modifier,
         textAlign = textAlign,
-        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+        style = MaterialTheme.typography.titleMedium.copy(
+            fontWeight = FontWeight.Normal,
+            fontSize = 14.sp,
+            lineHeight = 18.sp
+        )
     )
 }
 

@@ -12,7 +12,6 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
-import android.os.Build
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
@@ -26,6 +25,24 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 object LiveWallpaperRenderer {
+    private data class BackgroundCacheKey(
+        val width: Int,
+        val height: Int,
+        val trackSignature: String,
+        val artworkSignature: String,
+        val artworkGenerationId: Int,
+        val blurBucket: Int,
+        val brightnessBucket: Int
+    )
+
+    private data class BackgroundCache(
+        val key: BackgroundCacheKey,
+        val bitmap: Bitmap
+    )
+
+    @Volatile
+    private var backgroundCache: BackgroundCache? = null
+
     fun render(
         context: Context,
         state: PlaybackUiState,
@@ -38,26 +55,60 @@ object LiveWallpaperRenderer {
         val safeWidth = width.coerceAtLeast(1)
         val safeHeight = height.coerceAtLeast(1)
         val sourceArtwork = state.artworkBitmap ?: loadFallbackArtwork(context)
+        val backgroundKey = BackgroundCacheKey(
+            width = safeWidth,
+            height = safeHeight,
+            trackSignature = state.trackSignature,
+            artworkSignature = state.artworkSignature,
+            artworkGenerationId = sourceArtwork.generationId,
+            blurBucket = (state.blurAmount * 100f).toInt(),
+            brightnessBucket = (gradientBrightness * 100f).toInt()
+        )
+        val background = backgroundCache
+            ?.takeIf { it.key == backgroundKey }
+            ?.bitmap
+            ?: createBackground(
+                sourceArtwork = sourceArtwork,
+                width = safeWidth,
+                height = safeHeight,
+                gradientBrightness = gradientBrightness,
+                blurAmount = state.blurAmount
+            ).also { generated ->
+                backgroundCache = BackgroundCache(backgroundKey, generated)
+            }
+        if (!drawCards) {
+            return background
+        }
+
+        val output = background.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(output)
+
+        val coverRect = if (state.artworkBitmap != null) {
+            drawArtworkCard(canvas, state.artworkBitmap, state, safeWidth, safeHeight)
+        } else {
+            artworkCardRect(state, safeWidth, safeHeight)
+        }
+        drawPlayerCard(canvas, state, safeWidth, safeHeight, coverRect, context, background)
+
+        return output
+    }
+
+    private fun createBackground(
+        sourceArtwork: Bitmap,
+        width: Int,
+        height: Int,
+        gradientBrightness: Float,
+        blurAmount: Float
+    ): Bitmap {
         val artworkForPalette = scaleForPalette(sourceArtwork)
-        val output = Bitmap.createBitmap(safeWidth, safeHeight, Bitmap.Config.ARGB_8888)
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
         val basePalette = extractPalette(artworkForPalette)
         val accentPalette = basePalette.map { enrichColorPresence(it, gradientBrightness) }
 
-        drawPaletteBase(canvas, accentPalette, safeWidth, safeHeight)
-        drawStaticGradientGlow(canvas, accentPalette, safeWidth, safeHeight, state.blurAmount)
-        drawShade(canvas, safeWidth, safeHeight)
-
-        if (drawCards) {
-            val cardBackdrop = output.copy(Bitmap.Config.ARGB_8888, false)
-            val coverRect = if (state.artworkBitmap != null) {
-                drawArtworkCard(canvas, state.artworkBitmap, state, safeWidth, safeHeight)
-            } else {
-                artworkCardRect(state, safeWidth, safeHeight)
-            }
-            drawPlayerCard(canvas, state, safeWidth, safeHeight, coverRect, context, cardBackdrop)
-        }
-
+        drawPaletteBase(canvas, accentPalette, width, height)
+        drawStaticGradientGlow(canvas, accentPalette, width, height, blurAmount)
+        drawShade(canvas, width, height)
         return output
     }
 
@@ -71,14 +122,15 @@ object LiveWallpaperRenderer {
             shader = LinearGradient(
                 0f,
                 0f,
-                width * 0.92f,
+                0f,
                 height.toFloat(),
                 intArrayOf(
-                    preserveColorForWallpaper(blendColors(palette[0], palette[3], 0.10f), 0.08f),
-                    preserveColorForWallpaper(blendColors(palette[1], palette[0], 0.18f), 0.03f),
-                    preserveColorForWallpaper(blendColors(palette[2], palette[1], 0.12f), 0.10f)
+                    preserveColorForWallpaper(palette[0], 0.04f),
+                    preserveColorForWallpaper(blendColors(palette[1], palette[0], 0.10f), 0.03f),
+                    preserveColorForWallpaper(blendColors(palette[2], palette[3], 0.12f), 0.06f),
+                    preserveColorForWallpaper(palette[3], 0.10f)
                 ),
-                floatArrayOf(0f, 0.46f, 1f),
+                floatArrayOf(0f, 0.32f, 0.68f, 1f),
                 Shader.TileMode.CLAMP
             )
         }
@@ -308,8 +360,6 @@ object LiveWallpaperRenderer {
         val radius = min(panelHeight * (0.20f + state.cardCornerRadius * 0.7f), 58f)
         val calSans = ResourcesCompat.getFont(context, R.font.calsans_regular)
             ?: Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        val outfit = ResourcesCompat.getFont(context, R.font.outfit_variable)
-            ?: Typeface.create("sans-serif", Typeface.NORMAL)
         val clipPath = Path().apply {
             addRoundRect(rect, radius, radius, Path.Direction.CW)
         }
@@ -365,15 +415,16 @@ object LiveWallpaperRenderer {
             typeface = calSans
         }
         val artistPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.argb((255 * 0.7f).toInt(), 255, 255, 255)
+            color = AndroidColor.argb((255 * 0.65f).toInt(), 255, 255, 255)
             textAlign = align
             textSize = width * 0.024f * state.artistTextScale
-            typeface = weightedTypeface(outfit, 600)
+            typeface = calSans
         }
 
-        drawAnimatedText(
+        drawTitleText(
             canvas = canvas,
             text = state.title,
+            isExplicit = state.isExplicit,
             paint = titlePaint,
             left = contentLeft,
             right = contentRight,
@@ -382,17 +433,8 @@ object LiveWallpaperRenderer {
             pausedAtMs = state.pausedAtMs,
             marqueeStartedAtMs = state.marqueeStartedAtMs,
             maxCharactersBeforeMarquee = 29,
-            rightPadding = if (state.isExplicit) rect.width() * 0.09f else 0f
+            typeface = calSans
         )
-        if (state.isExplicit) {
-            drawExplicitBadge(
-                canvas = canvas,
-                centerX = contentRight - rect.width() * 0.035f,
-                centerY = titleY - titlePaint.textSize * 0.34f,
-                size = titlePaint.textSize * 0.78f,
-                typeface = calSans
-            )
-        }
         drawAnimatedText(
             canvas = canvas,
             text = state.artist,
@@ -450,6 +492,104 @@ object LiveWallpaperRenderer {
         canvas.drawText(formatTime(effectiveDuration), right, centerY - rect.height() * 0.07f, timePaint)
     }
 
+}
+
+private fun drawTitleText(
+    canvas: Canvas,
+    text: String,
+    isExplicit: Boolean,
+    paint: Paint,
+    left: Float,
+    right: Float,
+    baselineY: Float,
+    isPlaying: Boolean,
+    pausedAtMs: Long,
+    marqueeStartedAtMs: Long,
+    maxCharactersBeforeMarquee: Int,
+    typeface: Typeface
+) {
+    if (!isExplicit) {
+        drawAnimatedText(
+            canvas = canvas,
+            text = text,
+            paint = paint,
+            left = left,
+            right = right,
+            baselineY = baselineY,
+            isPlaying = isPlaying,
+            pausedAtMs = pausedAtMs,
+            marqueeStartedAtMs = marqueeStartedAtMs,
+            maxCharactersBeforeMarquee = maxCharactersBeforeMarquee
+        )
+        return
+    }
+
+    val availableWidth = (right - left).coerceAtLeast(1f)
+    val trimmed = text.trim()
+    if (trimmed.isBlank()) return
+
+    val badgeSize = paint.textSize * 0.78f
+    val badgeGap = paint.textSize * 0.26f
+    val badgeWidth = badgeSize
+    val fullTextWidth = paint.measureText(trimmed)
+    val shouldMarquee = trimmed.length > maxCharactersBeforeMarquee &&
+        fullTextWidth + badgeGap + badgeWidth > availableWidth
+
+    val originalAlign = paint.textAlign
+    paint.textAlign = Paint.Align.LEFT
+
+    if (!shouldMarquee) {
+        val safeTextWidth = (availableWidth - badgeGap - badgeWidth).coerceAtLeast(paint.textSize)
+        val fitted = fitText(trimmed, paint, safeTextWidth)
+        val fittedWidth = paint.measureText(fitted)
+        val groupWidth = fittedWidth + badgeGap + badgeWidth
+        val textX = when (originalAlign ?: Paint.Align.LEFT) {
+            Paint.Align.LEFT -> left
+            Paint.Align.CENTER -> left + (availableWidth - groupWidth) / 2f
+            Paint.Align.RIGHT -> right - groupWidth
+        }.coerceAtLeast(left)
+        canvas.drawText(fitted, textX, baselineY, paint)
+        drawExplicitBadge(
+            canvas = canvas,
+            centerX = textX + fittedWidth + badgeGap + badgeWidth / 2f,
+            centerY = baselineY - paint.textSize * 0.34f,
+            size = badgeSize,
+            typeface = typeface
+        )
+        paint.textAlign = originalAlign
+        return
+    }
+
+    val spacing = paint.textSize * 2.4f
+    val groupWidth = fullTextWidth + badgeGap + badgeWidth
+    val loopWidth = groupWidth + spacing
+    val pixelsPerSecond = (paint.textSize * 0.42f).coerceAtLeast(10f).toDouble()
+    val scrollDurationMs = ((loopWidth.toDouble() / pixelsPerSecond) * 1000.0).coerceAtLeast(1.0)
+    val motionClockMs = when {
+        isPlaying -> SystemClock.elapsedRealtime().toDouble()
+        pausedAtMs > 0L -> pausedAtMs.toDouble()
+        else -> SystemClock.elapsedRealtime().toDouble()
+    }
+    val startMs = marqueeStartedAtMs.takeIf { it > 0L }?.toDouble() ?: motionClockMs
+    val cyclePositionMs = ((motionClockMs - startMs).coerceAtLeast(0.0)) % scrollDurationMs
+    val scroll = ((cyclePositionMs / scrollDurationMs) * loopWidth).toFloat()
+
+    canvas.save()
+    canvas.clipRect(left, baselineY - paint.textSize * 1.3f, right, baselineY + paint.textSize * 0.45f)
+    var drawX = left - scroll
+    while (drawX < right) {
+        canvas.drawText(trimmed, drawX, baselineY, paint)
+        drawExplicitBadge(
+            canvas = canvas,
+            centerX = drawX + fullTextWidth + badgeGap + badgeWidth / 2f,
+            centerY = baselineY - paint.textSize * 0.34f,
+            size = badgeSize,
+            typeface = typeface
+        )
+        drawX += loopWidth
+    }
+    canvas.restore()
+    paint.textAlign = originalAlign
 }
 
 private fun drawExplicitBadge(
@@ -511,26 +651,26 @@ private fun drawAnimatedText(
 
     val originalAlign = paint.textAlign
     paint.textAlign = Paint.Align.LEFT
-    val spacing = paint.textSize * 1.8f
-    val textWidth = paint.measureText(trimmed)
-    val loopWidth = textWidth + spacing
-    val pixelsPerSecond = paint.textSize * 0.52f
-    val scrollDurationMs = ((loopWidth / pixelsPerSecond) * 1000f).coerceAtLeast(1f)
+    val spacing = paint.textSize * 2.4f
+    val textWidth = paint.measureText(trimmed).toDouble()
+    val loopWidth = textWidth + spacing.toDouble()
+    val pixelsPerSecond = (paint.textSize * 0.42f).coerceAtLeast(10f).toDouble()
+    val scrollDurationMs = ((loopWidth / pixelsPerSecond) * 1000.0).coerceAtLeast(1.0)
     val motionClockMs = when {
-        isPlaying -> SystemClock.elapsedRealtime().toFloat()
-        pausedAtMs > 0L -> pausedAtMs.toFloat()
-        else -> SystemClock.elapsedRealtime().toFloat()
+        isPlaying -> SystemClock.elapsedRealtime().toDouble()
+        pausedAtMs > 0L -> pausedAtMs.toDouble()
+        else -> SystemClock.elapsedRealtime().toDouble()
     }
-    val startMs = marqueeStartedAtMs.takeIf { it > 0L }?.toFloat() ?: motionClockMs
-    val cyclePositionMs = ((motionClockMs - startMs).coerceAtLeast(0f)) % scrollDurationMs
-    val scroll = (cyclePositionMs / scrollDurationMs) * loopWidth
+    val startMs = marqueeStartedAtMs.takeIf { it > 0L }?.toDouble() ?: motionClockMs
+    val cyclePositionMs = ((motionClockMs - startMs).coerceAtLeast(0.0)) % scrollDurationMs
+    val scroll = ((cyclePositionMs / scrollDurationMs) * loopWidth).toFloat()
 
     canvas.save()
     canvas.clipRect(left, baselineY - paint.textSize * 1.3f, left + availableWidth, baselineY + paint.textSize * 0.45f)
     var drawX = left - scroll
     while (drawX < left + availableWidth) {
         canvas.drawText(trimmed, drawX, baselineY, paint)
-        drawX += loopWidth
+        drawX += loopWidth.toFloat()
     }
     canvas.restore()
     paint.textAlign = originalAlign
@@ -549,23 +689,6 @@ private data class PaletteBucket(
     val color: Int,
     val coverage: Float
 )
-
-fun createBlurredBitmap(source: Bitmap, blurRadiusPx: Int): Bitmap {
-    val safeRadius = blurRadiusPx.coerceAtLeast(24)
-    val tinyDivisor = (10 + safeRadius / 8).coerceAtLeast(14)
-    val smallDivisor = (6 + safeRadius / 18).coerceAtLeast(8)
-    val tinyWidth = max(1, source.width / tinyDivisor)
-    val tinyHeight = max(1, source.height / tinyDivisor)
-    val smallWidth = max(1, source.width / smallDivisor)
-    val smallHeight = max(1, source.height / smallDivisor)
-
-    val tiny = Bitmap.createScaledBitmap(source, tinyWidth, tinyHeight, true)
-    val softened = Bitmap.createScaledBitmap(tiny, smallWidth, smallHeight, true)
-    val medium = Bitmap.createScaledBitmap(softened, max(1, source.width / 2), max(1, source.height / 2), true)
-    val full = Bitmap.createScaledBitmap(medium, source.width, source.height, true)
-    val finalPass = Bitmap.createScaledBitmap(full, max(1, source.width / 2), max(1, source.height / 2), true)
-    return Bitmap.createScaledBitmap(finalPass, source.width, source.height, true)
-}
 
 fun scaleAndCrop(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
     val scale = max(targetWidth / source.width.toFloat(), targetHeight / source.height.toFloat())
@@ -619,6 +742,64 @@ private fun extractPalette(bitmap: Bitmap): List<Int> {
     val sampleWidth = min(72, bitmap.width.coerceAtLeast(1))
     val sampleHeight = min(72, bitmap.height.coerceAtLeast(1))
     val sampledBitmap = Bitmap.createScaledBitmap(bitmap, sampleWidth, sampleHeight, true)
+    val verticalPalette = mutableListOf<Int>()
+
+    repeat(4) { bandIndex ->
+        val startY = (sampledBitmap.height * bandIndex) / 4
+        val endY = ((sampledBitmap.height * (bandIndex + 1)) / 4).coerceAtLeast(startY + 1)
+        dominantColorForBand(sampledBitmap, startY, endY)?.let(verticalPalette::add)
+    }
+
+    val globalPalette = extractGlobalPalette(sampledBitmap)
+    globalPalette.forEach { color ->
+        if (verticalPalette.size < 4) {
+            verticalPalette += color
+        }
+    }
+
+    while (verticalPalette.size < 4) {
+        val last = verticalPalette.lastOrNull() ?: AndroidColor.argb(255, 182, 126, 126)
+        verticalPalette += if (verticalPalette.isEmpty()) {
+            last
+        } else {
+            blendColors(verticalPalette.first(), last, 0.5f)
+        }
+    }
+
+    return verticalPalette.take(4)
+}
+
+private fun dominantColorForBand(bitmap: Bitmap, startY: Int, endY: Int): Int? {
+    val buckets = LinkedHashMap<Int, BucketAccumulator>()
+    val safeStart = startY.coerceIn(0, bitmap.height)
+    val safeEnd = endY.coerceIn(safeStart, bitmap.height)
+    if (safeStart >= safeEnd) return null
+
+    for (x in 0 until bitmap.width) {
+        for (y in safeStart until safeEnd) {
+            val pixel = bitmap.getPixel(x, y)
+            val bucketKey = quantizedColorKey(pixel)
+            val bucket = buckets.getOrPut(bucketKey) { BucketAccumulator() }
+            bucket.add(pixel)
+        }
+    }
+
+    val totalPixels = (bitmap.width * (safeEnd - safeStart)).coerceAtLeast(1)
+    val rankedBuckets = buckets.values
+        .map { accumulator ->
+            PaletteBucket(
+                color = accumulator.averageColor(),
+                coverage = accumulator.count.toFloat() / totalPixels.toFloat()
+            )
+        }
+        .sortedByDescending { bucket ->
+            bucket.coverage * 2.8f + paletteInterest(bucket.color) * 0.20f
+        }
+
+    return rankedBuckets.firstOrNull()?.color
+}
+
+private fun extractGlobalPalette(sampledBitmap: Bitmap): List<Int> {
     val buckets = LinkedHashMap<Int, BucketAccumulator>()
 
     for (x in 0 until sampledBitmap.width) {
@@ -795,12 +976,4 @@ private fun formatTime(milliseconds: Long): String {
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
     return "%d:%02d".format(minutes, seconds)
-}
-
-private fun weightedTypeface(base: Typeface, weight: Int): Typeface {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        Typeface.create(base, weight.coerceIn(100, 900), false)
-    } else {
-        Typeface.create(base, Typeface.BOLD)
-    }
 }

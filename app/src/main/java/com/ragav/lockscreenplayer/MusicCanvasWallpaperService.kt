@@ -21,6 +21,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MusicCanvasWallpaperService : WallpaperService() {
+    private companion object {
+        private const val PROGRESS_REDRAW_INTERVAL_MS = 250L
+    }
+
     override fun onCreateEngine(): Engine = MusicCanvasEngine()
 
     private enum class WallpaperSurfaceMode {
@@ -38,7 +42,6 @@ class MusicCanvasWallpaperService : WallpaperService() {
         private var surfaceMode = WallpaperSurfaceMode.HOME
         private var surfaceWidth = 0
         private var surfaceHeight = 0
-        private var animationPhase = 0f
         private var animationJob: Job? = null
         private var surfaceStateReceiverRegistered = false
         private val surfaceStateReceiver = object : BroadcastReceiver() {
@@ -85,7 +88,6 @@ class MusicCanvasWallpaperService : WallpaperService() {
                 } else {
                     WallpaperSurfaceMode.HOME
                 }
-                PlaybackRepository.refreshCurrentPlayback()
             }
             restartRendering()
         }
@@ -113,22 +115,25 @@ class MusicCanvasWallpaperService : WallpaperService() {
             animationJob?.cancel()
             if (!isVisibleOnScreen || surfaceWidth <= 0 || surfaceHeight <= 0) return
 
-            if (latestState.isPlaying) {
-                animationJob = engineScope.launch {
-                    while (isVisibleOnScreen) {
-                        PlaybackRepository.refreshCurrentPlayback()
-                        latestState = PlaybackRepository.uiState.value
-                        renderFrame(animationPhase)
-                        if (!latestState.isPlaying) break
-                        delay(500L)
-                    }
+            animationJob = engineScope.launch {
+                var drawCards = shouldDrawCardsForCurrentSurface()
+                renderFrame(drawCards)
+                while (isVisibleOnScreen && shouldTickProgress(drawCards)) {
+                    delay(PROGRESS_REDRAW_INTERVAL_MS)
+                    drawCards = shouldDrawCardsForCurrentSurface()
+                    renderFrame(drawCards)
                 }
-            } else {
-                animationJob = engineScope.launch {
-                    PlaybackRepository.refreshCurrentPlayback()
-                    latestState = PlaybackRepository.uiState.value
-                    renderFrame(animationPhase)
-                }
+                schedulePausedCardHideIfNeeded(drawCards)
+            }
+        }
+
+        private suspend fun schedulePausedCardHideIfNeeded(drawCards: Boolean) {
+            if (!drawCards || latestState.isPlaying) return
+            val remainingMs = PlaybackRepository.remainingCardPauseHoldMs(latestState)
+            if (remainingMs <= 0L) return
+            delay(remainingMs + 32L)
+            if (isVisibleOnScreen && !PlaybackRepository.shouldShowCard(latestState)) {
+                renderFrame(drawCards = false)
             }
         }
 
@@ -141,7 +146,11 @@ class MusicCanvasWallpaperService : WallpaperService() {
             }
         }
 
-        private suspend fun renderFrame(@Suppress("UNUSED_PARAMETER") phase: Float) {
+        private fun shouldTickProgress(drawCards: Boolean): Boolean {
+            return drawCards && latestState.isPlaying && latestState.durationMs > 0L
+        }
+
+        private suspend fun renderFrame(drawCards: Boolean) {
             val wallpaperBitmap = runCatching {
                 withContext(Dispatchers.Default) {
                     LiveWallpaperRenderer.render(
@@ -149,7 +158,7 @@ class MusicCanvasWallpaperService : WallpaperService() {
                         state = latestState,
                         width = surfaceWidth,
                         height = surfaceHeight,
-                        drawCards = shouldDrawCardsForCurrentSurface()
+                        drawCards = drawCards
                     )
                 }
             }.getOrElse {

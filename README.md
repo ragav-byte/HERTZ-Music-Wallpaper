@@ -1,64 +1,119 @@
 # HERTZ: Music Wallpaper
 
-HERTZ is a music-inspired live wallpaper for Android. It turns the current song artwork into a fluid color gradient and can show optional music cards on the lock screen, home screen, or both.
+HERTZ is a music-inspired live wallpaper for Android. It turns the current song artwork into a color-matched gradient wallpaper and can show an optional artwork card plus song details on the lock screen, home screen, or both.
 
-## What it does
+## Highlights
 
-- Reads the current playing song title, artist, timeline, and artwork from the active media session on your phone
-- Builds a fluid moving gradient from the dominant colors in the cover art instead of showing the cover art as the wallpaper background
-- Freezes the fluid motion when playback is paused and resumes when music starts again
-- Lets you show the card on the lock screen only, home screen only, both, or neither
-- Hides the cards instantly when playback stops or the source player closes, while keeping the gradient wallpaper active
-- Lets you tune the artwork card size, text card width, card radius, frost amount, blur, text size, and vertical placement
-- Uses marquee text for long song names or artist names inside the wallpaper card
+- Live wallpaper background generated from the current song artwork
+- Optional lock-screen style artwork card with title, artist, explicit badge, and timeline
+- Separate apply flow for `With card` and `No card` modes
+- Card visibility timeout after pause: immediately, 5s, 10s, 20s, 30s, 1m, 5m, or 10m
+- Adjustable artwork card size, text card width, card radius, frost, blur, text sizing, alignment, and placement
+- Smooth marquee for long song titles and artist names
+- Local artwork cache for faster repeated songs
+- Battery protection that hides music cards at 20% battery or below
 
-## Artwork cache
+## Screenshots
 
-HERTZ keeps a small local artwork cache so song changes can feel faster.
+The important screenshots for the repo should live in `screenshots/`.
 
-- Recent artwork is cached in memory for quick reuse
-- Recent artwork is also cached on disk so reopening the app or wallpaper can feel faster
-- Cached items that are not used for 24 hours are deleted automatically
-- The cache is capped to stay lightweight:
-  - around 40 MB in memory
-  - up to 200 files on disk
-  - about 80 MB max disk usage
+Recommended files:
 
-The cache is local-only and is used only to improve artwork loading speed.
+- `screenshots/app-requirements-current-playing.png` - setup, permissions, and current playing card
+- `screenshots/app-card-visibility.png` - card visibility dropdown and pause timeout
+- `screenshots/app-configuration.png` - layout sliders and preset controls
+- `screenshots/app-preview.png` - live wallpaper preview inside the app
+- `screenshots/app-apply-wallpaper.png` - with-card/no-card apply dialog
+- `screenshots/lockscreen-pink-card.png` - lock screen wallpaper with artwork card
+- `screenshots/lockscreen-warm-card.png` - another artwork/color example
+- `screenshots/lockscreen-blue-card.png` - blue artwork/color example
+- `screenshots/lockscreen-dark-card.png` - dark artwork/color example
 
-## Why it gets smoother as you use it
+The screenshot folder is included so release images can be added without mixing them with build outputs.
 
-The first time a brand-new song plays, HERTZ must wait for Android or the music app to publish the artwork and timeline through the media session or notification. That can create a short delay, especially with high-resolution album art.
+## How HERTZ Gets Music Data
 
-After a song has appeared once, HERTZ can reuse its cached artwork and remembered duration by matching the title and artist. This means repeated songs should load much faster, often close to instantly. Text, artist, and timeline updates are designed to appear first, so the wallpaper does not feel stuck while artwork is still arriving.
+HERTZ uses Android media APIs instead of repeatedly scanning the phone.
 
-If a new song starts but the cover art is not ready yet, HERTZ avoids showing the previous song artwork as if it were current. The card updates with the new text first, then fills in the artwork as soon as Android provides it.
+Primary data source:
+
+- `MediaSessionManager`
+- `MediaController`
+- `MediaController.Callback`
+- `onMetadataChanged()`
+- `onPlaybackStateChanged()`
+
+The app reads the active media session published by the music player. From that session it uses:
+
+- song title
+- artist
+- album
+- playback state
+- current playback position
+- playback speed
+- duration
+- artwork URI or artwork bitmap
+
+Notification access is used mainly to discover active media sessions and as a fallback for simple text metadata. The app does not constantly scrape notifications for heavy artwork work.
+
+## Why It Should Not Hurt Battery Or Heat The Phone
+
+The wallpaper is designed to be event-driven and lightweight.
+
+- It updates when Android reports a media metadata or playback state change.
+- It avoids continuous heavy polling.
+- Artwork decoding and cache work happen off the main thread.
+- Artwork is resized before processing so full-size album art is not repeatedly processed.
+- Blur/background work is generated per artwork change and reused.
+- Motion freezes when playback is paused or the wallpaper is not active.
+- Cards are disabled automatically at 20% battery or below.
+- Timeline progress is calculated locally from Android playback state instead of forcing constant metadata reads.
+
+This keeps the wallpaper closer to a lightweight renderer than a constantly running app screen.
+
+## Artwork Cache
+
+HERTZ keeps a small local artwork cache so repeated songs can load faster.
+
+- Recent artwork is cached in memory for quick reuse.
+- Resized artwork is cached on disk for future sessions.
+- Cached items that are not used for 24 hours are deleted automatically.
+- The cache is local-only and used only for artwork speed.
+- Cache limits are kept bounded so the app does not grow endlessly.
+
+First-time artwork may still take a moment because Android or the music app has to publish the image through the media session. Repeated songs should feel faster because HERTZ can reuse cached artwork and remembered track duration.
 
 ## Privacy
 
-HERTZ does not collect, upload, or sell sensitive personal data.
+HERTZ does not collect, upload, sell, or sync sensitive personal data.
 
 The app works locally on your device and only uses:
 
-- notification access to read active media metadata from your current player
+- notification/media access to read active media metadata from the current player
 - wallpaper access to render the live wallpaper
+- local cache storage for resized artwork and palette data
 
 No account login, remote analytics, or cloud sync is required for the core wallpaper experience.
 
-## Install the APK
+## Install The APK
 
 1. Copy the generated APK file to your mobile.
 2. Install it using APKMirror Installer.
 3. Open HERTZ.
-4. Enable media access if Android asks for it.
-5. Tap `Set wallpaper` and choose `HERTZ Wallpaper`.
+4. Enable media access when Android asks for it.
+5. Tap `Apply wallpaper`.
+6. Pick `With card` or `No card`.
+7. Apply it to the lock screen, home screen, or both.
 
-APK path after build:
+APK path after building:
 
 `app/build/outputs/apk/debug/app-debug.apk`
 
-## Notes
+## Notice
 
-- HERTZ is currently being tested before a broader release.
-- It will be released to the app store shortly after final testing is complete.
-- Some Android phones allow lock-screen-only live wallpapers, while others apply the wallpaper to both home and lock screen.
+- HERTZ is newly developed and still being tested.
+- Brand-new songs can have a delay of about 5 seconds before artwork appears, depending on how quickly Android and the music app publish metadata.
+- Repeated songs should usually load faster because of the local cache.
+- Music cards do not show at 20% battery or below to protect battery life and reduce heat.
+- Some Android phones handle live wallpapers differently, so lock-screen-only and home-screen behavior may vary by device.
+- HERTZ will be released to the app store after more testing.
