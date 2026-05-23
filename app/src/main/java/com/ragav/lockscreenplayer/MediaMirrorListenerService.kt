@@ -137,34 +137,36 @@ class MediaMirrorListenerService : NotificationListenerService() {
     }
 
     private fun selectPreferredController(controllers: List<MediaController>): MediaController? {
-        if (controllers.isEmpty()) return null
+        val eligibleControllers = controllers.filterNot { PlaybackRepository.isBlockedMediaPackage(it.packageName) }
+        if (eligibleControllers.isEmpty()) return null
 
         val lockedPackage = activeMediaPackage
-        if (lockedPackage != null) {
-            val lockedPlaying = controllers.firstOrNull {
+        if (lockedPackage != null && !PlaybackRepository.isBlockedMediaPackage(lockedPackage)) {
+            val lockedPlaying = eligibleControllers.firstOrNull {
                 it.packageName == lockedPackage &&
                     (it.playbackState?.state == PlaybackState.STATE_PLAYING || it.playbackState?.state == PlaybackState.STATE_BUFFERING)
             }
             if (lockedPlaying != null) return lockedPlaying
 
-            val lockedAny = controllers.firstOrNull { it.packageName == lockedPackage }
+            val lockedAny = eligibleControllers.firstOrNull { it.packageName == lockedPackage }
             if (lockedAny != null) return lockedAny
         }
 
-        val playingAppleMusic = controllers.firstOrNull {
+        val playingAppleMusic = eligibleControllers.firstOrNull {
             it.packageName == APPLE_MUSIC_PACKAGE && it.playbackState?.state == PlaybackState.STATE_PLAYING
         }
         if (playingAppleMusic != null) return playingAppleMusic
 
-        val anyPlaying = controllers.firstOrNull {
+        val anyPlaying = eligibleControllers.firstOrNull {
             it.playbackState?.state == PlaybackState.STATE_PLAYING || it.playbackState?.state == PlaybackState.STATE_BUFFERING
         }
         if (anyPlaying != null) return anyPlaying
 
-        return controllers.firstOrNull { it.packageName == APPLE_MUSIC_PACKAGE } ?: controllers.first()
+        return eligibleControllers.firstOrNull { it.packageName == APPLE_MUSIC_PACKAGE } ?: eligibleControllers.first()
     }
 
     private fun primeNotificationText(sbn: StatusBarNotification) {
+        if (PlaybackRepository.isBlockedMediaPackage(sbn.packageName)) return
         if (!isLikelyMediaNotification(sbn)) return
         val preferredPackage = activeMediaPackage
         if (preferredPackage != null && sbn.packageName != preferredPackage) return
@@ -231,6 +233,7 @@ class MediaMirrorListenerService : NotificationListenerService() {
     }
 
     private fun isLikelyMediaNotification(sbn: StatusBarNotification): Boolean {
+        if (PlaybackRepository.isBlockedMediaPackage(sbn.packageName)) return false
         val notification = sbn.notification
         val extras = notification.extras ?: return sbn.packageName in KNOWN_PLAYER_PACKAGES
         return sbn.packageName in KNOWN_PLAYER_PACKAGES ||

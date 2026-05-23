@@ -9,7 +9,8 @@ HERTZ is a music-inspired live wallpaper for Android. It turns the current song 
 - Separate apply flow for `With card` and `No card` modes
 - Card visibility timeout after pause: immediately, 5s, 10s, 20s, 30s, 1m, 5m, or 10m
 - Adjustable artwork card size, text card width, card radius, frost, blur, text sizing, alignment, and placement
-- Smooth marquee for long song titles and artist names
+- Gradient color picker with presets and draggable artwork sample points
+- Smooth in-app marquee for long song titles and artist names; lock-screen text stays clipped for better wallpaper performance
 - Local artwork cache for faster repeated songs
 - Battery protection that hides music cards at 20% battery or below
 
@@ -53,6 +54,22 @@ The app reads the active media session published by the music player. From that 
 - artwork URI or artwork bitmap
 
 Notification access is used mainly to discover active media sessions and as a fallback for simple text metadata. The app does not constantly scrape notifications for heavy artwork work.
+
+If a music player publishes a remote artwork URI, HERTZ may download that artwork directly to render the wallpaper. This happens locally on the device for artwork display and caching only; HERTZ does not upload your music data or artwork to a server.
+
+Browser and video-player sessions such as Chrome, Brave, and YouTube are filtered out so normal web/video playback does not take over the wallpaper experience.
+
+## Gradient Color Picking
+
+HERTZ samples the current cover art to build the wallpaper background.
+
+- The default `Spatial` preset samples top-left, center, and bottom-right regions of the artwork.
+- Other presets include left-to-right, top-to-bottom, diagonal reverse, and centered glow.
+- `Custom` mode lets you drag three numbered anchor dots directly on the cover art preview.
+- The selected point colors are previewed in the app before applying the wallpaper.
+- Gradient brightness adjusts color richness/saturation instead of simply brightening the screen.
+
+Palette extraction runs only when artwork or gradient settings change, using a downscaled image so the wallpaper stays lightweight.
 
 ## Why It Should Not Hurt Battery Or Heat The Phone
 

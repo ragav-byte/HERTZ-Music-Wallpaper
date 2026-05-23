@@ -32,7 +32,13 @@ object LiveWallpaperRenderer {
         val artworkSignature: String,
         val artworkGenerationId: Int,
         val blurBucket: Int,
-        val brightnessBucket: Int
+        val brightnessBucket: Int,
+        val anchor1XBucket: Int,
+        val anchor1YBucket: Int,
+        val anchor2XBucket: Int,
+        val anchor2YBucket: Int,
+        val anchor3XBucket: Int,
+        val anchor3YBucket: Int
     )
 
     private data class BackgroundCache(
@@ -64,7 +70,13 @@ object LiveWallpaperRenderer {
             artworkSignature = state.artworkSignature,
             artworkGenerationId = sourceArtwork.safeGenerationId(),
             blurBucket = (state.blurAmount * 100f).toInt(),
-            brightnessBucket = (gradientBrightness * 100f).toInt()
+            brightnessBucket = (gradientBrightness * 100f).toInt(),
+            anchor1XBucket = (state.gradientAnchor1X.coerceIn(0f, 1f) * 1000f).toInt(),
+            anchor1YBucket = (state.gradientAnchor1Y.coerceIn(0f, 1f) * 1000f).toInt(),
+            anchor2XBucket = (state.gradientAnchor2X.coerceIn(0f, 1f) * 1000f).toInt(),
+            anchor2YBucket = (state.gradientAnchor2Y.coerceIn(0f, 1f) * 1000f).toInt(),
+            anchor3XBucket = (state.gradientAnchor3X.coerceIn(0f, 1f) * 1000f).toInt(),
+            anchor3YBucket = (state.gradientAnchor3Y.coerceIn(0f, 1f) * 1000f).toInt()
         )
         val background = backgroundCache
             ?.takeIf { it.key == backgroundKey }
@@ -73,6 +85,7 @@ object LiveWallpaperRenderer {
                 sourceArtwork = sourceArtwork,
                 width = safeWidth,
                 height = safeHeight,
+                anchors = gradientAnchorsForState(state),
                 gradientBrightness = gradientBrightness,
                 blurAmount = state.blurAmount
             ).also { generated ->
@@ -99,19 +112,40 @@ object LiveWallpaperRenderer {
         sourceArtwork: Bitmap,
         width: Int,
         height: Int,
+        anchors: List<PaletteAnchor>,
         gradientBrightness: Float,
         blurAmount: Float
     ): Bitmap {
-        val artworkForPalette = scaleForPalette(sourceArtwork)
+        val artworkForPalette = scaleForPalette(squareCropForPalette(sourceArtwork))
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
-        val basePalette = extractPalette(artworkForPalette)
+        val basePalette = extractPalette(artworkForPalette, anchors)
         val accentPalette = basePalette.map { enrichColorPresence(it, gradientBrightness) }
 
         drawPaletteBase(canvas, accentPalette, width, height)
         drawStaticGradientGlow(canvas, accentPalette, width, height, blurAmount)
         drawShade(canvas, width, height)
         return output
+    }
+
+    private fun gradientAnchorsForState(state: PlaybackUiState): List<PaletteAnchor> {
+        return listOf(
+            PaletteAnchor(
+                xRatio = state.gradientAnchor1X.coerceIn(0f, 1f),
+                yRatio = state.gradientAnchor1Y.coerceIn(0f, 1f),
+                radiusRatio = 0.18f
+            ),
+            PaletteAnchor(
+                xRatio = state.gradientAnchor2X.coerceIn(0f, 1f),
+                yRatio = state.gradientAnchor2Y.coerceIn(0f, 1f),
+                radiusRatio = 0.20f
+            ),
+            PaletteAnchor(
+                xRatio = state.gradientAnchor3X.coerceIn(0f, 1f),
+                yRatio = state.gradientAnchor3Y.coerceIn(0f, 1f),
+                radiusRatio = 0.18f
+            )
+        )
     }
 
     private fun drawPaletteBase(
@@ -431,23 +465,17 @@ object LiveWallpaperRenderer {
             left = contentLeft,
             right = contentRight,
             baselineY = titleY,
-            isPlaying = state.isPlaying,
-            pausedAtMs = state.pausedAtMs,
-            marqueeStartedAtMs = state.marqueeStartedAtMs,
-            maxCharactersBeforeMarquee = 29,
+            alignment = state.textAlignment,
             typeface = calSans
         )
-        drawAnimatedText(
+        drawSmartText(
             canvas = canvas,
             text = state.artist,
             paint = artistPaint,
             left = contentLeft,
             right = contentRight,
             baselineY = artistY,
-            isPlaying = state.isPlaying,
-            pausedAtMs = state.pausedAtMs,
-            marqueeStartedAtMs = state.marqueeStartedAtMs,
-            maxCharactersBeforeMarquee = 29
+            alignment = state.textAlignment
         )
 
         drawTimeline(canvas, rect, contentLeft, contentRight, timelineY, state, calSans)
@@ -504,24 +532,18 @@ private fun drawTitleText(
     left: Float,
     right: Float,
     baselineY: Float,
-    isPlaying: Boolean,
-    pausedAtMs: Long,
-    marqueeStartedAtMs: Long,
-    maxCharactersBeforeMarquee: Int,
+    alignment: TextAlignmentOption,
     typeface: Typeface
 ) {
     if (!isExplicit) {
-        drawAnimatedText(
+        drawSmartText(
             canvas = canvas,
             text = text,
             paint = paint,
             left = left,
             right = right,
             baselineY = baselineY,
-            isPlaying = isPlaying,
-            pausedAtMs = pausedAtMs,
-            marqueeStartedAtMs = marqueeStartedAtMs,
-            maxCharactersBeforeMarquee = maxCharactersBeforeMarquee
+            alignment = alignment
         )
         return
     }
@@ -534,61 +556,32 @@ private fun drawTitleText(
     val badgeGap = paint.textSize * 0.26f
     val badgeWidth = badgeSize
     val fullTextWidth = paint.measureText(trimmed)
-    val shouldMarquee = trimmed.length > maxCharactersBeforeMarquee &&
-        fullTextWidth + badgeGap + badgeWidth > availableWidth
 
     val originalAlign = paint.textAlign
     paint.textAlign = Paint.Align.LEFT
 
-    if (!shouldMarquee) {
-        val safeTextWidth = (availableWidth - badgeGap - badgeWidth).coerceAtLeast(paint.textSize)
-        val fitted = fitText(trimmed, paint, safeTextWidth)
-        val fittedWidth = paint.measureText(fitted)
-        val groupWidth = fittedWidth + badgeGap + badgeWidth
-        val textX = when (originalAlign ?: Paint.Align.LEFT) {
-            Paint.Align.LEFT -> left
-            Paint.Align.CENTER -> left + (availableWidth - groupWidth) / 2f
-            Paint.Align.RIGHT -> right - groupWidth
-        }.coerceAtLeast(left)
-        canvas.drawText(fitted, textX, baselineY, paint)
-        drawExplicitBadge(
-            canvas = canvas,
-            centerX = textX + fittedWidth + badgeGap + badgeWidth / 2f,
-            centerY = baselineY - paint.textSize * 0.34f,
-            size = badgeSize,
-            typeface = typeface
-        )
-        paint.textAlign = originalAlign
-        return
+    val forceLeftCrop = trimmed.length >= 29
+    val textX = if (forceLeftCrop) {
+        left
+    } else {
+        val groupWidth = (fullTextWidth + badgeGap + badgeWidth).coerceAtMost(availableWidth)
+        when (alignment) {
+            TextAlignmentOption.LEFT -> left
+            TextAlignmentOption.CENTER -> left + (availableWidth - groupWidth) / 2f
+            TextAlignmentOption.RIGHT -> right - groupWidth
+        }.coerceIn(left, right)
     }
-
-    val spacing = paint.textSize * 2.4f
-    val groupWidth = fullTextWidth + badgeGap + badgeWidth
-    val loopWidth = groupWidth + spacing
-    val pixelsPerSecond = (paint.textSize * 0.42f).coerceAtLeast(10f).toDouble()
-    val scrollDurationMs = ((loopWidth.toDouble() / pixelsPerSecond) * 1000.0).coerceAtLeast(1.0)
-    val motionClockMs = when {
-        isPlaying -> SystemClock.elapsedRealtime().toDouble()
-        pausedAtMs > 0L -> pausedAtMs.toDouble()
-        else -> SystemClock.elapsedRealtime().toDouble()
-    }
-    val startMs = marqueeStartedAtMs.takeIf { it > 0L }?.toDouble() ?: motionClockMs
-    val cyclePositionMs = ((motionClockMs - startMs).coerceAtLeast(0.0)) % scrollDurationMs
-    val scroll = ((cyclePositionMs / scrollDurationMs) * loopWidth).toFloat()
-
     canvas.save()
     canvas.clipRect(left, baselineY - paint.textSize * 1.3f, right, baselineY + paint.textSize * 0.45f)
-    var drawX = left - scroll
-    while (drawX < right) {
-        canvas.drawText(trimmed, drawX, baselineY, paint)
+    canvas.drawText(trimmed, textX, baselineY, paint)
+    if (!forceLeftCrop && fullTextWidth + badgeGap + badgeWidth <= availableWidth) {
         drawExplicitBadge(
             canvas = canvas,
-            centerX = drawX + fullTextWidth + badgeGap + badgeWidth / 2f,
+            centerX = textX + fullTextWidth + badgeGap + badgeWidth / 2f,
             centerY = baselineY - paint.textSize * 0.34f,
             size = badgeSize,
             typeface = typeface
         )
-        drawX += loopWidth
     }
     canvas.restore()
     paint.textAlign = originalAlign
@@ -621,59 +614,36 @@ private fun drawExplicitBadge(
     canvas.drawText("E", centerX, textCenter, textPaint)
 }
 
-private fun drawAnimatedText(
+private fun drawSmartText(
     canvas: Canvas,
     text: String,
     paint: Paint,
     left: Float,
     right: Float,
     baselineY: Float,
-    isPlaying: Boolean,
-    pausedAtMs: Long,
-    marqueeStartedAtMs: Long,
-    maxCharactersBeforeMarquee: Int,
+    alignment: TextAlignmentOption,
     rightPadding: Float = 0f
 ) {
     val availableWidth = (right - left - rightPadding).coerceAtLeast(1f)
     val trimmed = text.trim()
     if (trimmed.isBlank()) return
 
-    val shouldMarquee = trimmed.length > maxCharactersBeforeMarquee &&
-        paint.measureText(trimmed) > availableWidth
-
-    if (!shouldMarquee) {
-        val anchorX = when (paint.textAlign ?: Paint.Align.LEFT) {
-            Paint.Align.LEFT -> left
-            Paint.Align.CENTER -> left + availableWidth / 2f
-            Paint.Align.RIGHT -> left + availableWidth
-        }
-        canvas.drawText(fitText(trimmed, paint, availableWidth), anchorX, baselineY, paint)
-        return
-    }
-
     val originalAlign = paint.textAlign
     paint.textAlign = Paint.Align.LEFT
-    val spacing = paint.textSize * 2.4f
-    val textWidth = paint.measureText(trimmed).toDouble()
-    val loopWidth = textWidth + spacing.toDouble()
-    val pixelsPerSecond = (paint.textSize * 0.42f).coerceAtLeast(10f).toDouble()
-    val scrollDurationMs = ((loopWidth / pixelsPerSecond) * 1000.0).coerceAtLeast(1.0)
-    val motionClockMs = when {
-        isPlaying -> SystemClock.elapsedRealtime().toDouble()
-        pausedAtMs > 0L -> pausedAtMs.toDouble()
-        else -> SystemClock.elapsedRealtime().toDouble()
+    val forceLeftCrop = trimmed.length >= 29
+    val textWidth = paint.measureText(trimmed)
+    val drawX = if (forceLeftCrop) {
+        left
+    } else {
+        when (alignment) {
+            TextAlignmentOption.LEFT -> left
+            TextAlignmentOption.CENTER -> left + (availableWidth - textWidth.coerceAtMost(availableWidth)) / 2f
+            TextAlignmentOption.RIGHT -> left + availableWidth - textWidth.coerceAtMost(availableWidth)
+        }
     }
-    val startMs = marqueeStartedAtMs.takeIf { it > 0L }?.toDouble() ?: motionClockMs
-    val cyclePositionMs = ((motionClockMs - startMs).coerceAtLeast(0.0)) % scrollDurationMs
-    val scroll = ((cyclePositionMs / scrollDurationMs) * loopWidth).toFloat()
-
     canvas.save()
     canvas.clipRect(left, baselineY - paint.textSize * 1.3f, left + availableWidth, baselineY + paint.textSize * 0.45f)
-    var drawX = left - scroll
-    while (drawX < left + availableWidth) {
-        canvas.drawText(trimmed, drawX, baselineY, paint)
-        drawX += loopWidth.toFloat()
-    }
+    canvas.drawText(trimmed, drawX, baselineY, paint)
     canvas.restore()
     paint.textAlign = originalAlign
 }
@@ -736,6 +706,19 @@ fun scaleForPalette(source: Bitmap): Bitmap {
     }
 }
 
+private fun squareCropForPalette(source: Bitmap): Bitmap {
+    if (!source.isUsableBitmap()) return solidFallbackBitmap(1, 1)
+    val side = min(source.width, source.height).coerceAtLeast(1)
+    if (source.width == side && source.height == side) return source
+    val left = ((source.width - side) / 2).coerceAtLeast(0)
+    val top = ((source.height - side) / 2).coerceAtLeast(0)
+    return runCatching {
+        Bitmap.createBitmap(source, left, top, side, side)
+    }.getOrElse {
+        source
+    }
+}
+
 fun fitText(text: String, paint: Paint, maxWidth: Float): String {
     if (paint.measureText(text) <= maxWidth) return text
     var candidate = text
@@ -758,7 +741,7 @@ fun loadFallbackArtwork(context: Context): Bitmap {
     return bitmap
 }
 
-private fun extractPalette(bitmap: Bitmap): List<Int> {
+private fun extractPalette(bitmap: Bitmap, anchors: List<PaletteAnchor>): List<Int> {
     if (!bitmap.isUsableBitmap()) return fallbackPalette()
     val sampleWidth = min(72, bitmap.width.coerceAtLeast(1))
     val sampleHeight = min(72, bitmap.height.coerceAtLeast(1))
@@ -768,27 +751,21 @@ private fun extractPalette(bitmap: Bitmap): List<Int> {
         return fallbackPalette()
     }
     val selectedPalette = mutableListOf<Int>()
-    val globalPalette = extractGlobalPalette(sampledBitmap)
-
-    val anchors = listOf(
-        PaletteAnchor(xRatio = 0.08f, yRatio = 0.12f, radiusRatio = 0.18f),
-        PaletteAnchor(xRatio = 0.50f, yRatio = 0.52f, radiusRatio = 0.20f),
-        PaletteAnchor(xRatio = 0.90f, yRatio = 0.88f, radiusRatio = 0.18f)
-    )
 
     anchors.forEach { anchor ->
-        val anchorColor = dominantColorForAnchor(sampledBitmap, anchor, selectedPalette)
-            ?: nextDistinctGlobalColor(globalPalette, selectedPalette)
-        anchorColor?.let { color ->
-            selectedPalette += if (selectedPalette.any { selected -> colorDistance(selected, color) < 28f }) {
-                nextDistinctGlobalColor(globalPalette, selectedPalette) ?: color
-            } else {
-                color
-            }
+        dominantColorForAnchor(sampledBitmap, anchor)?.let { color ->
+            selectedPalette += color
         }
     }
 
-    nextDistinctGlobalColor(globalPalette, selectedPalette)?.let { selectedPalette += it }
+    if (selectedPalette.size >= 3) {
+        val bridge = blendColors(
+            blendColors(selectedPalette[0], selectedPalette[1], 0.50f),
+            selectedPalette[2],
+            0.34f
+        )
+        selectedPalette += bridge
+    }
 
     while (selectedPalette.size < 4) {
         val last = selectedPalette.lastOrNull() ?: AndroidColor.argb(255, 182, 126, 126)
@@ -813,19 +790,17 @@ private fun fallbackPalette(): List<Int> {
 
 private fun dominantColorForAnchor(
     bitmap: Bitmap,
-    anchor: PaletteAnchor,
-    selectedColors: List<Int>
+    anchor: PaletteAnchor
 ): Int? {
-    val buckets = LinkedHashMap<Int, BucketAccumulator>()
     val centerX = ((bitmap.width - 1).coerceAtLeast(0) * anchor.xRatio).toInt().coerceIn(0, bitmap.width - 1)
     val centerY = ((bitmap.height - 1).coerceAtLeast(0) * anchor.yRatio).toInt().coerceIn(0, bitmap.height - 1)
-    val radiusX = max(4, (bitmap.width * anchor.radiusRatio).toInt())
-    val radiusY = max(4, (bitmap.height * anchor.radiusRatio).toInt())
+    val radiusX = max(1, (bitmap.width * anchor.radiusRatio * 0.20f).toInt())
+    val radiusY = max(1, (bitmap.height * anchor.radiusRatio * 0.20f).toInt())
     val startX = (centerX - radiusX).coerceAtLeast(0)
     val endX = (centerX + radiusX).coerceAtMost(bitmap.width - 1)
     val startY = (centerY - radiusY).coerceAtLeast(0)
     val endY = (centerY + radiusY).coerceAtMost(bitmap.height - 1)
-    var sampledPixels = 0
+    val accumulator = BucketAccumulator()
 
     for (x in startX..endX) {
         for (y in startY..endY) {
@@ -833,29 +808,13 @@ private fun dominantColorForAnchor(
             val normalizedY = (y - centerY).toFloat() / radiusY.toFloat()
             if (normalizedX * normalizedX + normalizedY * normalizedY > 1f) continue
             val pixel = bitmap.getPixel(x, y)
-            val bucketKey = quantizedColorKey(pixel)
-            val bucket = buckets.getOrPut(bucketKey) { BucketAccumulator() }
-            bucket.add(pixel)
-            sampledPixels += 1
+            val distance = sqrt(normalizedX * normalizedX + normalizedY * normalizedY).coerceIn(0f, 1f)
+            val weight = 1f + (1f - distance) * 9f
+            accumulator.add(pixel, weight)
         }
     }
 
-    val totalPixels = sampledPixels.coerceAtLeast(1)
-    val rankedBuckets = buckets.values
-        .map { accumulator ->
-            PaletteBucket(
-                color = accumulator.averageColor(),
-                coverage = accumulator.count.toFloat() / totalPixels.toFloat()
-            )
-        }
-        .sortedByDescending { bucket ->
-            bucket.coverage * 1.70f +
-                paletteInterest(bucket.color) * 0.92f +
-                colorUsability(bucket.color) +
-                minColorDistance(bucket.color, selectedColors) / 520f
-        }
-
-    return rankedBuckets.firstOrNull()?.color
+    return accumulator.averageColor()
 }
 
 private fun nextDistinctGlobalColor(globalPalette: List<Int>, selectedColors: List<Int>): Int? {
@@ -1028,27 +987,30 @@ private fun solidFallbackBitmap(width: Int, height: Int): Bitmap {
 }
 
 private class BucketAccumulator {
-    var redSum = 0L
-    var greenSum = 0L
-    var blueSum = 0L
+    var redSum = 0f
+    var greenSum = 0f
+    var blueSum = 0f
     var count = 0
+    var weight = 0f
 
-    fun add(color: Int) {
-        redSum += AndroidColor.red(color)
-        greenSum += AndroidColor.green(color)
-        blueSum += AndroidColor.blue(color)
+    fun add(color: Int, sampleWeight: Float = 1f) {
+        val safeWeight = sampleWeight.coerceAtLeast(0.01f)
+        redSum += AndroidColor.red(color) * safeWeight
+        greenSum += AndroidColor.green(color) * safeWeight
+        blueSum += AndroidColor.blue(color) * safeWeight
         count += 1
+        weight += safeWeight
     }
 
     fun averageColor(): Int {
-        if (count == 0) {
+        if (count == 0 || weight <= 0f) {
             return AndroidColor.argb(255, 182, 126, 126)
         }
         return AndroidColor.argb(
             255,
-            (redSum / count).toInt().coerceIn(0, 255),
-            (greenSum / count).toInt().coerceIn(0, 255),
-            (blueSum / count).toInt().coerceIn(0, 255)
+            (redSum / weight).toInt().coerceIn(0, 255),
+            (greenSum / weight).toInt().coerceIn(0, 255),
+            (blueSum / weight).toInt().coerceIn(0, 255)
         )
     }
 }

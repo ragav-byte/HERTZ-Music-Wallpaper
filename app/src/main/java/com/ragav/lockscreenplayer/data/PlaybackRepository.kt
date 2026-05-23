@@ -64,6 +64,13 @@ data class PlaybackUiState(
     val fluidScale: Float = 0.82f,
     val fluidity: Float = 0.62f,
     val gradientBrightness: Float = 1.0f,
+    val gradientAnchorPreset: GradientAnchorPreset = GradientAnchorPreset.SPATIAL,
+    val gradientAnchor1X: Float = 0.08f,
+    val gradientAnchor1Y: Float = 0.12f,
+    val gradientAnchor2X: Float = 0.50f,
+    val gradientAnchor2Y: Float = 0.52f,
+    val gradientAnchor3X: Float = 0.90f,
+    val gradientAnchor3Y: Float = 0.88f,
     val preserveArtworkOnReboot: Boolean = false,
     val batteryPercent: Int = 100,
     val cardsDisabledForBattery: Boolean = false,
@@ -76,6 +83,27 @@ enum class TextAlignmentOption {
     LEFT,
     CENTER,
     RIGHT
+}
+
+enum class GradientAnchorPreset(
+    val label: String,
+    val point1X: Float,
+    val point1Y: Float,
+    val point2X: Float,
+    val point2Y: Float,
+    val point3X: Float,
+    val point3Y: Float
+) {
+    SPATIAL("Spatial", 0.08f, 0.12f, 0.50f, 0.52f, 0.90f, 0.88f),
+    LEFT_TO_RIGHT("Left to right", 0.12f, 0.50f, 0.50f, 0.50f, 0.88f, 0.50f),
+    TOP_TO_BOTTOM("Top to bottom", 0.50f, 0.12f, 0.50f, 0.50f, 0.50f, 0.88f),
+    DIAGONAL_REVERSE("Diagonal reverse", 0.90f, 0.12f, 0.50f, 0.52f, 0.08f, 0.88f),
+    CENTERED_GLOW("Centered glow", 0.50f, 0.25f, 0.50f, 0.52f, 0.50f, 0.78f),
+    CUSTOM("Custom", 0.08f, 0.12f, 0.50f, 0.52f, 0.90f, 0.88f);
+
+    companion object {
+        val selectablePresets = values().toList()
+    }
 }
 
 object PlaybackRepository {
@@ -121,10 +149,32 @@ object PlaybackRepository {
     private const val KEY_FLUID_SCALE = "fluid_scale"
     private const val KEY_FLUIDITY = "fluidity"
     private const val KEY_GRADIENT_BRIGHTNESS = "gradient_brightness"
+    private const val KEY_GRADIENT_ANCHOR_PRESET = "gradient_anchor_preset"
+    private const val KEY_GRADIENT_ANCHOR_1_X = "gradient_anchor_1_x"
+    private const val KEY_GRADIENT_ANCHOR_1_Y = "gradient_anchor_1_y"
+    private const val KEY_GRADIENT_ANCHOR_2_X = "gradient_anchor_2_x"
+    private const val KEY_GRADIENT_ANCHOR_2_Y = "gradient_anchor_2_y"
+    private const val KEY_GRADIENT_ANCHOR_3_X = "gradient_anchor_3_x"
+    private const val KEY_GRADIENT_ANCHOR_3_Y = "gradient_anchor_3_y"
     private const val KEY_PRESERVE_ARTWORK_ON_REBOOT = "preserve_artwork_on_reboot"
     private const val KEY_TEXT_ALIGNMENT = "text_alignment"
     private const val DURATION_CACHE_PREFIX = "duration_cache_"
     private const val APPLE_MUSIC_PACKAGE = "com.apple.android.music"
+    private val BLOCKED_MEDIA_PACKAGES = setOf(
+        "com.android.chrome",
+        "com.chrome.beta",
+        "com.chrome.dev",
+        "com.chrome.canary",
+        "com.brave.browser",
+        "com.brave.browser_beta",
+        "org.mozilla.firefox",
+        "org.mozilla.firefox_beta",
+        "com.microsoft.emmx",
+        "com.opera.browser",
+        "com.opera.mini.native",
+        "com.duckduckgo.mobile.android",
+        "com.google.android.youtube"
+    )
     private const val NEW_TRACK_POSITION_GRACE_MS = 5_000L
     private const val SAME_TRACK_RESTART_WINDOW_MS = 2_500L
     private const val SAME_TRACK_RESTART_MIN_POSITION_MS = 6_000L
@@ -147,6 +197,10 @@ object PlaybackRepository {
         override fun onReceive(context: Context?, intent: Intent?) {
             updateBatteryState(intent)
         }
+    }
+
+    fun isBlockedMediaPackage(packageName: String): Boolean {
+        return packageName in BLOCKED_MEDIA_PACKAGES
     }
 
     fun initialize(context: Context) {
@@ -181,6 +235,19 @@ object PlaybackRepository {
             fluidScale = prefs.getFloat(KEY_FLUID_SCALE, 0.82f).coerceIn(0f, 1f),
             fluidity = prefs.getFloat(KEY_FLUIDITY, 0.62f).coerceIn(0f, 1f),
             gradientBrightness = prefs.getFloat(KEY_GRADIENT_BRIGHTNESS, 1.0f).coerceIn(0.65f, 1.65f),
+            gradientAnchorPreset = readGradientAnchorPreset(prefs.getString(KEY_GRADIENT_ANCHOR_PRESET, null)),
+            gradientAnchor1X = prefs.getFloat(KEY_GRADIENT_ANCHOR_1_X, GradientAnchorPreset.SPATIAL.point1X)
+                .coerceIn(0f, 1f),
+            gradientAnchor1Y = prefs.getFloat(KEY_GRADIENT_ANCHOR_1_Y, GradientAnchorPreset.SPATIAL.point1Y)
+                .coerceIn(0f, 1f),
+            gradientAnchor2X = prefs.getFloat(KEY_GRADIENT_ANCHOR_2_X, GradientAnchorPreset.SPATIAL.point2X)
+                .coerceIn(0f, 1f),
+            gradientAnchor2Y = prefs.getFloat(KEY_GRADIENT_ANCHOR_2_Y, GradientAnchorPreset.SPATIAL.point2Y)
+                .coerceIn(0f, 1f),
+            gradientAnchor3X = prefs.getFloat(KEY_GRADIENT_ANCHOR_3_X, GradientAnchorPreset.SPATIAL.point3X)
+                .coerceIn(0f, 1f),
+            gradientAnchor3Y = prefs.getFloat(KEY_GRADIENT_ANCHOR_3_Y, GradientAnchorPreset.SPATIAL.point3Y)
+                .coerceIn(0f, 1f),
             preserveArtworkOnReboot = preserveArtworkOnReboot,
             textAlignment = prefs.getString(KEY_TEXT_ALIGNMENT, TextAlignmentOption.CENTER.name)
                 ?.let { runCatching { TextAlignmentOption.valueOf(it) }.getOrNull() }
@@ -203,15 +270,18 @@ object PlaybackRepository {
     }
 
     fun attachController(controller: MediaController?) {
-        if (currentController === controller) {
-            syncFromController(controller)
+        val safeController = controller?.takeUnless {
+            isBlockedMediaPackage(runCatching { it.packageName }.getOrNull().orEmpty())
+        }
+        if (currentController === safeController) {
+            syncFromController(safeController)
             return
         }
 
         currentController?.unregisterCallback(controllerCallback)
-        currentController = controller
-        controller?.registerCallback(controllerCallback)
-        syncFromController(controller)
+        currentController = safeController
+        safeController?.registerCallback(controllerCallback)
+        syncFromController(safeController)
     }
 
     fun refreshCurrentPlayback() {
@@ -356,6 +426,54 @@ object PlaybackRepository {
         persistLayout()
     }
 
+    fun setGradientAnchorPreset(preset: GradientAnchorPreset) {
+        mutableUiState.update { state ->
+            if (preset == GradientAnchorPreset.CUSTOM) {
+                state.copy(gradientAnchorPreset = GradientAnchorPreset.CUSTOM)
+            } else {
+                state.copy(
+                    gradientAnchorPreset = preset,
+                    gradientAnchor1X = preset.point1X.coerceIn(0f, 1f),
+                    gradientAnchor1Y = preset.point1Y.coerceIn(0f, 1f),
+                    gradientAnchor2X = preset.point2X.coerceIn(0f, 1f),
+                    gradientAnchor2Y = preset.point2Y.coerceIn(0f, 1f),
+                    gradientAnchor3X = preset.point3X.coerceIn(0f, 1f),
+                    gradientAnchor3Y = preset.point3Y.coerceIn(0f, 1f)
+                )
+            }
+        }
+        persistLayout()
+    }
+
+    fun setGradientAnchor(index: Int, x: Float, y: Float) {
+        val safeX = x.coerceIn(0f, 1f)
+        val safeY = y.coerceIn(0f, 1f)
+        mutableUiState.update { state ->
+            when (index) {
+                1 -> state.copy(
+                    gradientAnchorPreset = GradientAnchorPreset.CUSTOM,
+                    gradientAnchor1X = safeX,
+                    gradientAnchor1Y = safeY
+                )
+
+                2 -> state.copy(
+                    gradientAnchorPreset = GradientAnchorPreset.CUSTOM,
+                    gradientAnchor2X = safeX,
+                    gradientAnchor2Y = safeY
+                )
+
+                3 -> state.copy(
+                    gradientAnchorPreset = GradientAnchorPreset.CUSTOM,
+                    gradientAnchor3X = safeX,
+                    gradientAnchor3Y = safeY
+                )
+
+                else -> state
+            }
+        }
+        persistLayout()
+    }
+
     fun setPreserveArtworkOnReboot(enabled: Boolean) {
         mutableUiState.update { state ->
             state.copy(preserveArtworkOnReboot = enabled)
@@ -392,6 +510,13 @@ object PlaybackRepository {
                 fluidScale = 0.82f,
                 fluidity = 0.62f,
                 gradientBrightness = 1.0f,
+                gradientAnchorPreset = GradientAnchorPreset.SPATIAL,
+                gradientAnchor1X = GradientAnchorPreset.SPATIAL.point1X,
+                gradientAnchor1Y = GradientAnchorPreset.SPATIAL.point1Y,
+                gradientAnchor2X = GradientAnchorPreset.SPATIAL.point2X,
+                gradientAnchor2Y = GradientAnchorPreset.SPATIAL.point2Y,
+                gradientAnchor3X = GradientAnchorPreset.SPATIAL.point3X,
+                gradientAnchor3Y = GradientAnchorPreset.SPATIAL.point3Y,
                 preserveArtworkOnReboot = false,
                 textAlignment = TextAlignmentOption.CENTER
             )
@@ -407,6 +532,7 @@ object PlaybackRepository {
         artwork: Bitmap?,
         isExplicit: Boolean? = null
     ) {
+        if (isBlockedMediaPackage(packageName)) return
         val cleanTitle = title?.trim().orEmpty()
         val cleanArtist = artist?.trim().orEmpty()
         if (cleanTitle.isBlank() && cleanArtist.isBlank() && artwork == null) return
@@ -522,6 +648,10 @@ object PlaybackRepository {
         val metadata = runCatching { controller.metadata }.getOrNull()
         val description = runCatching { metadata?.description }.getOrNull()
         val packageName = runCatching { controller.packageName }.getOrNull().orEmpty()
+        if (isBlockedMediaPackage(packageName)) {
+            attachController(null)
+            return
+        }
         val playbackState = runCatching { controller.playbackState }.getOrNull()
         val playbackStateCode = playbackState?.state
         val trackTitle = description?.title?.toString().orEmpty()
@@ -958,6 +1088,12 @@ object PlaybackRepository {
         return CARD_PAUSE_HOLD_OPTIONS_MS.minByOrNull { abs(it - durationMs) } ?: 0L
     }
 
+    private fun readGradientAnchorPreset(value: String?): GradientAnchorPreset {
+        return value
+            ?.let { runCatching { GradientAnchorPreset.valueOf(it) }.getOrNull() }
+            ?: GradientAnchorPreset.SPATIAL
+    }
+
     private fun persistLayout() {
         val prefs = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return
         val state = mutableUiState.value
@@ -980,6 +1116,13 @@ object PlaybackRepository {
             .putFloat(KEY_FLUID_SCALE, state.fluidScale)
             .putFloat(KEY_FLUIDITY, state.fluidity)
             .putFloat(KEY_GRADIENT_BRIGHTNESS, state.gradientBrightness)
+            .putString(KEY_GRADIENT_ANCHOR_PRESET, state.gradientAnchorPreset.name)
+            .putFloat(KEY_GRADIENT_ANCHOR_1_X, state.gradientAnchor1X)
+            .putFloat(KEY_GRADIENT_ANCHOR_1_Y, state.gradientAnchor1Y)
+            .putFloat(KEY_GRADIENT_ANCHOR_2_X, state.gradientAnchor2X)
+            .putFloat(KEY_GRADIENT_ANCHOR_2_Y, state.gradientAnchor2Y)
+            .putFloat(KEY_GRADIENT_ANCHOR_3_X, state.gradientAnchor3X)
+            .putFloat(KEY_GRADIENT_ANCHOR_3_Y, state.gradientAnchor3Y)
             .putBoolean(KEY_PRESERVE_ARTWORK_ON_REBOOT, state.preserveArtworkOnReboot)
             .putString(KEY_TEXT_ALIGNMENT, state.textAlignment.name)
             .apply()

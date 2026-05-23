@@ -4,6 +4,7 @@ import android.app.WallpaperManager
 import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -16,8 +17,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -26,6 +29,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -57,29 +61,37 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.ragav.lockscreenplayer.data.GradientAnchorPreset
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ragav.lockscreenplayer.data.PlaybackRepository
 import com.ragav.lockscreenplayer.data.PlaybackUiState
 import com.ragav.lockscreenplayer.data.TextAlignmentOption
 import com.ragav.lockscreenplayer.ui.theme.LockscreenPlayerTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 private enum class WallpaperApplyTarget {
     LOCK_SCREEN,
@@ -121,6 +133,8 @@ class MainActivity : ComponentActivity() {
                     onSetArtistTextScale = PlaybackRepository::setArtistTextScale,
                     onSetBlurAmount = PlaybackRepository::setBlurAmount,
                     onSetGradientBrightness = PlaybackRepository::setGradientBrightness,
+                    onSetGradientAnchorPreset = PlaybackRepository::setGradientAnchorPreset,
+                    onSetGradientAnchor = PlaybackRepository::setGradientAnchor,
                     onSetPreserveArtworkOnReboot = PlaybackRepository::setPreserveArtworkOnReboot,
                     onSetTextAlignment = PlaybackRepository::setTextAlignment,
                     onResetLayout = PlaybackRepository::resetLayout
@@ -278,6 +292,8 @@ private fun WallpaperStudioScreen(
     onSetArtistTextScale: (Float) -> Unit,
     onSetBlurAmount: (Float) -> Unit,
     onSetGradientBrightness: (Float) -> Unit,
+    onSetGradientAnchorPreset: (GradientAnchorPreset) -> Unit,
+    onSetGradientAnchor: (Int, Float, Float) -> Unit,
     onSetPreserveArtworkOnReboot: (Boolean) -> Unit,
     onSetTextAlignment: (TextAlignmentOption) -> Unit,
     onResetLayout: () -> Unit
@@ -424,7 +440,7 @@ private fun WallpaperStudioScreen(
                 Text(
                     text = "Card width ${(playbackState.cardScale * 100).toInt()}%",
                     color = Color(0xFFE8E8F0),
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp)
                 )
                 AppSlider(
                     value = playbackState.cardScale,
@@ -435,7 +451,7 @@ private fun WallpaperStudioScreen(
                 Text(
                     text = "Text card width ${(playbackState.playerCardWidthScale * 100).toInt()}%",
                     color = Color(0xFFE8E8F0),
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp)
                 )
                 AppSlider(
                     value = playbackState.playerCardWidthScale,
@@ -446,7 +462,7 @@ private fun WallpaperStudioScreen(
                 Text(
                     text = "Text card Y ${(playbackState.playerCardOffsetY * 100).toInt()}%",
                     color = Color(0xFFE8E8F0),
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp)
                 )
                 AppSlider(
                     value = playbackState.playerCardOffsetY,
@@ -457,7 +473,7 @@ private fun WallpaperStudioScreen(
                 Text(
                     text = "Card radius ${(playbackState.cardCornerRadius * 100).toInt()}%",
                     color = Color(0xFFE8E8F0),
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp)
                 )
                 AppSlider(
                     value = playbackState.cardCornerRadius,
@@ -468,7 +484,7 @@ private fun WallpaperStudioScreen(
                 Text(
                     text = "Glass frost ${(playbackState.playerCardFrost * 100).toInt()}%",
                     color = Color(0xFFE8E8F0),
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp)
                 )
                 AppSlider(
                     value = playbackState.playerCardFrost,
@@ -499,7 +515,7 @@ private fun WallpaperStudioScreen(
                 Text(
                     text = "Layer blur ${(playbackState.blurAmount * 100).toInt()}%",
                     color = Color(0xFFE8E8F0),
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp)
                 )
                 AppSlider(
                     value = playbackState.blurAmount,
@@ -510,12 +526,29 @@ private fun WallpaperStudioScreen(
                 Text(
                     text = "Gradient brightness ${(playbackState.gradientBrightness * 100).toInt()}%",
                     color = Color(0xFFE8E8F0),
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp)
                 )
                 AppSlider(
                     value = playbackState.gradientBrightness,
                     onValueChange = onSetGradientBrightness,
                     valueRange = 0.65f..1.65f
+                )
+
+                Text(
+                    text = "Gradient color picking",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = "Choose where HERTZ samples colors from the cover art.",
+                    color = Color(0xFFD2D1DB),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                GradientAnchorPicker(
+                    playbackState = playbackState,
+                    onPresetSelected = onSetGradientAnchorPreset,
+                    onAnchorChanged = onSetGradientAnchor
                 )
 
                 Text(
@@ -647,7 +680,7 @@ private fun AbsoluteOffsetControls(
     Text(
         text = "$xLabel ${(xValue * 100).toInt()}%",
         color = Color(0xFFE8E8F0),
-        style = MaterialTheme.typography.titleMedium
+        style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp)
     )
     AppSlider(
         value = xValue,
@@ -658,7 +691,7 @@ private fun AbsoluteOffsetControls(
     Text(
         text = "$yLabel ${(yValue * 100).toInt()}%",
         color = Color(0xFFE8E8F0),
-        style = MaterialTheme.typography.titleMedium
+        style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp)
     )
     AppSlider(
         value = yValue,
@@ -824,6 +857,8 @@ private fun CurrentPlayingCard(
     playbackState: PlaybackUiState,
     onOpenSourceApp: (String) -> Unit
 ) {
+    val timelineText by rememberPlaybackPositionText(playbackState)
+
     InfoCard(
         title = "Current playing",
         subtitle = if (playbackState.hasSourceSession) {
@@ -875,12 +910,21 @@ private fun CurrentPlayingCard(
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontSize = 13.sp * playbackState.titleTextScale
                             ),
-                            textAlign = TextAlign.Left,
+                            textAlign = currentPlayingTextAlign(playbackState.textAlignment),
                             maxLines = 1,
                             overflow = TextOverflow.Clip,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .basicMarquee(iterations = Int.MAX_VALUE)
+                                .then(
+                                    if (playbackState.title.trim().length >= 29) {
+                                        Modifier.basicMarquee(
+                                            iterations = Int.MAX_VALUE,
+                                            initialDelayMillis = 0
+                                        )
+                                    } else {
+                                        Modifier
+                                    }
+                                )
                         )
                     }
                     if (playbackState.isExplicit) {
@@ -894,15 +938,24 @@ private fun CurrentPlayingCard(
                         fontWeight = FontWeight.Normal,
                         fontSize = 11.sp * playbackState.artistTextScale
                     ),
-                    textAlign = TextAlign.Left,
+                    textAlign = currentPlayingTextAlign(playbackState.textAlignment),
                     maxLines = 1,
                     overflow = TextOverflow.Clip,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .basicMarquee(iterations = Int.MAX_VALUE)
+                        .then(
+                            if (playbackState.artist.trim().length >= 29) {
+                                Modifier.basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    initialDelayMillis = 0
+                                )
+                            } else {
+                                Modifier
+                            }
+                        )
                 )
                 Text(
-                    text = displayPlaybackPosition(playbackState),
+                    text = timelineText,
                     color = Color(0xFFE7E5F4),
                     style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
                     textAlign = TextAlign.Left,
@@ -974,6 +1027,249 @@ private fun SizePresetChoice(
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
         ) {
             ButtonLabel(label)
+        }
+    }
+}
+
+@Composable
+private fun GradientAnchorPicker(
+    playbackState: PlaybackUiState,
+    onPresetSelected: (GradientAnchorPreset) -> Unit,
+    onAnchorChanged: (Int, Float, Float) -> Unit
+) {
+    val context = LocalContext.current
+    val artwork = remember(playbackState.artworkBitmap) {
+        playbackState.artworkBitmap ?: loadFallbackArtwork(context)
+    }
+    val previewArtwork = remember(artwork) {
+        squareCropForAnchorPreview(artwork)
+    }
+    val anchorColors = remember(
+        previewArtwork,
+        playbackState.gradientAnchor1X,
+        playbackState.gradientAnchor1Y,
+        playbackState.gradientAnchor2X,
+        playbackState.gradientAnchor2Y,
+        playbackState.gradientAnchor3X,
+        playbackState.gradientAnchor3Y
+    ) {
+        listOf(
+            sampleAnchorPreviewColor(previewArtwork, playbackState.gradientAnchor1X, playbackState.gradientAnchor1Y),
+            sampleAnchorPreviewColor(previewArtwork, playbackState.gradientAnchor2X, playbackState.gradientAnchor2Y),
+            sampleAnchorPreviewColor(previewArtwork, playbackState.gradientAnchor3X, playbackState.gradientAnchor3Y)
+        )
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        GradientAnchorPresetSelector(
+            selectedPreset = playbackState.gradientAnchorPreset,
+            onPresetSelected = onPresetSelected
+        )
+
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color(0xFF070708))
+        ) {
+            val density = LocalDensity.current
+            val boxSizePx = with(density) { maxWidth.toPx().coerceAtLeast(1f) }
+            val dotSize = 22.dp
+            val dotSizePx = with(density) { dotSize.toPx() }
+
+            Image(
+                bitmap = previewArtwork.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x33000000))
+            )
+
+            GradientAnchorDot(
+                index = 1,
+                x = playbackState.gradientAnchor1X,
+                y = playbackState.gradientAnchor1Y,
+                boxSizePx = boxSizePx,
+                dotSize = dotSize,
+                dotSizePx = dotSizePx,
+                onAnchorChanged = onAnchorChanged
+            )
+            GradientAnchorDot(
+                index = 2,
+                x = playbackState.gradientAnchor2X,
+                y = playbackState.gradientAnchor2Y,
+                boxSizePx = boxSizePx,
+                dotSize = dotSize,
+                dotSizePx = dotSizePx,
+                onAnchorChanged = onAnchorChanged
+            )
+            GradientAnchorDot(
+                index = 3,
+                x = playbackState.gradientAnchor3X,
+                y = playbackState.gradientAnchor3Y,
+                boxSizePx = boxSizePx,
+                dotSize = dotSize,
+                dotSizePx = dotSizePx,
+                onAnchorChanged = onAnchorChanged
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            anchorColors.forEachIndexed { index, color ->
+                AnchorColorSwatch(
+                    label = "Point ${index + 1}",
+                    color = Color(color),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GradientAnchorDot(
+    index: Int,
+    x: Float,
+    y: Float,
+    boxSizePx: Float,
+    dotSize: androidx.compose.ui.unit.Dp,
+    dotSizePx: Float,
+    onAnchorChanged: (Int, Float, Float) -> Unit
+) {
+    val latestX by rememberUpdatedState(x)
+    val latestY by rememberUpdatedState(y)
+    Box(
+        modifier = Modifier
+            .offset {
+                IntOffset(
+                    x = (x.coerceIn(0f, 1f) * boxSizePx - dotSizePx / 2f).roundToInt(),
+                    y = (y.coerceIn(0f, 1f) * boxSizePx - dotSizePx / 2f).roundToInt()
+                )
+            }
+            .size(dotSize)
+            .shadow(8.dp, CircleShape, clip = false)
+            .clip(CircleShape)
+            .background(Color(0xFFFF1D1D))
+            .border(1.dp, Color(0x99FFFFFF), CircleShape)
+            .pointerInput(index, boxSizePx) {
+                var dragX = latestX
+                var dragY = latestY
+                detectDragGestures(
+                    onDragStart = {
+                        dragX = latestX
+                        dragY = latestY
+                    }
+                ) { change, dragAmount ->
+                    change.consume()
+                    dragX = (dragX + dragAmount.x / boxSizePx).coerceIn(0f, 1f)
+                    dragY = (dragY + dragAmount.y / boxSizePx).coerceIn(0f, 1f)
+                    onAnchorChanged(index, dragX, dragY)
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = index.toString(),
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = 11.sp),
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun AnchorColorSwatch(
+    label: String,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0x22FFFFFF))
+            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(14.dp))
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(18.dp)
+                .clip(RoundedCornerShape(5.dp))
+                .background(color)
+                .border(1.dp, Color(0x99FFFFFF), RoundedCornerShape(5.dp))
+        )
+        Text(
+            text = label,
+            color = Color.White,
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+            maxLines = 1,
+            overflow = TextOverflow.Clip
+        )
+    }
+}
+
+@Composable
+private fun GradientAnchorPresetSelector(
+    selectedPreset: GradientAnchorPreset,
+    onPresetSelected: (GradientAnchorPreset) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(percent = 3),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8D6E4))
+        ) {
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                ButtonLabel(
+                    text = selectedPreset.label,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
+                )
+                Icon(
+                    imageVector = Icons.Rounded.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .size(20.dp),
+                    tint = Color(0xFFD8D6E4)
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier
+                .clip(RoundedCornerShape(percent = 3))
+                .background(Color(0xF0101012))
+        ) {
+            GradientAnchorPreset.selectablePresets.forEach { preset ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = preset.label,
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.sp)
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onPresetSelected(preset)
+                    }
+                )
+            }
         }
     }
 }
@@ -1161,6 +1457,13 @@ private fun WallpaperPreviewCard(playbackState: PlaybackUiState) {
         playbackState.artistTextScale,
         playbackState.blurAmount,
         playbackState.gradientBrightness,
+        playbackState.gradientAnchorPreset,
+        playbackState.gradientAnchor1X,
+        playbackState.gradientAnchor1Y,
+        playbackState.gradientAnchor2X,
+        playbackState.gradientAnchor2Y,
+        playbackState.gradientAnchor3X,
+        playbackState.gradientAnchor3Y,
         playbackState.fluidScale,
         playbackState.textAlignment,
         playbackState.fluidity,
@@ -1422,6 +1725,13 @@ private fun WallpaperModeCard(
         playbackState.artistTextScale,
         playbackState.blurAmount,
         playbackState.gradientBrightness,
+        playbackState.gradientAnchorPreset,
+        playbackState.gradientAnchor1X,
+        playbackState.gradientAnchor1Y,
+        playbackState.gradientAnchor2X,
+        playbackState.gradientAnchor2Y,
+        playbackState.gradientAnchor3X,
+        playbackState.gradientAnchor3Y,
         playbackState.fluidity,
         showCard
     ) {
@@ -1513,6 +1823,73 @@ private fun displayPlaybackPosition(playbackState: PlaybackUiState): String {
         "${displayTime(current)} / ${displayTime(effectiveDuration)}"
     } else {
         displayTime(current)
+    }
+}
+
+private fun currentPlayingTextAlign(alignment: TextAlignmentOption): TextAlign {
+    return when (alignment) {
+        TextAlignmentOption.LEFT -> TextAlign.Left
+        TextAlignmentOption.CENTER -> TextAlign.Center
+        TextAlignmentOption.RIGHT -> TextAlign.Right
+    }
+}
+
+private fun squareCropForAnchorPreview(source: Bitmap): Bitmap {
+    if (source.width <= 0 || source.height <= 0) return source
+    val side = minOf(source.width, source.height).coerceAtLeast(1)
+    if (source.width == side && source.height == side) return source
+    val left = ((source.width - side) / 2).coerceAtLeast(0)
+    val top = ((source.height - side) / 2).coerceAtLeast(0)
+    return runCatching {
+        Bitmap.createBitmap(source, left, top, side, side)
+    }.getOrElse {
+        source
+    }
+}
+
+private fun sampleAnchorPreviewColor(bitmap: Bitmap, xRatio: Float, yRatio: Float): Int {
+    if (bitmap.width <= 0 || bitmap.height <= 0) return AndroidColor.WHITE
+    val centerX = ((bitmap.width - 1) * xRatio.coerceIn(0f, 1f)).roundToInt().coerceIn(0, bitmap.width - 1)
+    val centerY = ((bitmap.height - 1) * yRatio.coerceIn(0f, 1f)).roundToInt().coerceIn(0, bitmap.height - 1)
+    val radius = maxOf(1, minOf(bitmap.width, bitmap.height) / 42)
+    var red = 0
+    var green = 0
+    var blue = 0
+    var count = 0
+
+    for (x in (centerX - radius).coerceAtLeast(0)..(centerX + radius).coerceAtMost(bitmap.width - 1)) {
+        for (y in (centerY - radius).coerceAtLeast(0)..(centerY + radius).coerceAtMost(bitmap.height - 1)) {
+            val pixel = bitmap.getPixel(x, y)
+            red += AndroidColor.red(pixel)
+            green += AndroidColor.green(pixel)
+            blue += AndroidColor.blue(pixel)
+            count += 1
+        }
+    }
+
+    val safeCount = count.coerceAtLeast(1)
+    return AndroidColor.argb(
+        255,
+        (red / safeCount).coerceIn(0, 255),
+        (green / safeCount).coerceIn(0, 255),
+        (blue / safeCount).coerceIn(0, 255)
+    )
+}
+
+@Composable
+private fun rememberPlaybackPositionText(playbackState: PlaybackUiState) = produceState(
+    initialValue = displayPlaybackPosition(playbackState),
+    playbackState.trackSignature,
+    playbackState.isPlaying,
+    playbackState.playbackSpeed,
+    playbackState.positionMs,
+    playbackState.positionCapturedAtMs,
+    playbackState.durationMs
+) {
+    while (true) {
+        value = displayPlaybackPosition(playbackState)
+        if (!playbackState.isPlaying) break
+        delay(1_000L)
     }
 }
 
