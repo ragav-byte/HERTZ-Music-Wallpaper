@@ -560,29 +560,22 @@ private fun drawTitleText(
     val originalAlign = paint.textAlign
     paint.textAlign = Paint.Align.LEFT
 
-    val forceLeftCrop = trimmed.length >= 29
-    val textX = if (forceLeftCrop) {
-        left
-    } else {
-        val groupWidth = (fullTextWidth + badgeGap + badgeWidth).coerceAtMost(availableWidth)
-        when (alignment) {
-            TextAlignmentOption.LEFT -> left
-            TextAlignmentOption.CENTER -> left + (availableWidth - groupWidth) / 2f
-            TextAlignmentOption.RIGHT -> right - groupWidth
-        }.coerceIn(left, right)
+    val groupWidth = fullTextWidth + badgeGap + badgeWidth
+    val textX = when (alignment) {
+        TextAlignmentOption.LEFT -> left
+        TextAlignmentOption.CENTER -> left + (availableWidth - groupWidth) / 2f
+        TextAlignmentOption.RIGHT -> right - groupWidth
     }
     canvas.save()
     canvas.clipRect(left, baselineY - paint.textSize * 1.3f, right, baselineY + paint.textSize * 0.45f)
     canvas.drawText(trimmed, textX, baselineY, paint)
-    if (!forceLeftCrop && fullTextWidth + badgeGap + badgeWidth <= availableWidth) {
-        drawExplicitBadge(
-            canvas = canvas,
-            centerX = textX + fullTextWidth + badgeGap + badgeWidth / 2f,
-            centerY = baselineY - paint.textSize * 0.34f,
-            size = badgeSize,
-            typeface = typeface
-        )
-    }
+    drawExplicitBadge(
+        canvas = canvas,
+        centerX = textX + fullTextWidth + badgeGap + badgeWidth / 2f,
+        centerY = baselineY - paint.textSize * 0.34f,
+        size = badgeSize,
+        typeface = typeface
+    )
     canvas.restore()
     paint.textAlign = originalAlign
 }
@@ -630,16 +623,11 @@ private fun drawSmartText(
 
     val originalAlign = paint.textAlign
     paint.textAlign = Paint.Align.LEFT
-    val forceLeftCrop = trimmed.length >= 29
     val textWidth = paint.measureText(trimmed)
-    val drawX = if (forceLeftCrop) {
-        left
-    } else {
-        when (alignment) {
-            TextAlignmentOption.LEFT -> left
-            TextAlignmentOption.CENTER -> left + (availableWidth - textWidth.coerceAtMost(availableWidth)) / 2f
-            TextAlignmentOption.RIGHT -> left + availableWidth - textWidth.coerceAtMost(availableWidth)
-        }
+    val drawX = when (alignment) {
+        TextAlignmentOption.LEFT -> left
+        TextAlignmentOption.CENTER -> left + (availableWidth - textWidth) / 2f
+        TextAlignmentOption.RIGHT -> left + availableWidth - textWidth
     }
     canvas.save()
     canvas.clipRect(left, baselineY - paint.textSize * 1.3f, left + availableWidth, baselineY + paint.textSize * 0.45f)

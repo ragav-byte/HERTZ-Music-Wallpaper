@@ -11,6 +11,8 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
+import android.view.View
+import android.view.WindowInsetsController
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
@@ -107,6 +109,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureSystemBars()
         syncPermissionState()
 
         setContent {
@@ -140,6 +143,22 @@ class MainActivity : ComponentActivity() {
                     onResetLayout = PlaybackRepository::resetLayout
                 )
             }
+        }
+    }
+
+    private fun configureSystemBars() {
+        window.statusBarColor = AndroidColor.BLACK
+        window.navigationBarColor = AndroidColor.BLACK
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.setSystemBarsAppearance(
+                0,
+                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            )
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility =
+                window.decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
         }
     }
 
@@ -858,6 +877,8 @@ private fun CurrentPlayingCard(
     onOpenSourceApp: (String) -> Unit
 ) {
     val timelineText by rememberPlaybackPositionText(playbackState)
+    val titleNeedsMarquee = playbackState.title.trim().length >= 29
+    val artistNeedsMarquee = playbackState.artist.trim().length >= 29
 
     InfoCard(
         title = "Current playing",
@@ -910,13 +931,17 @@ private fun CurrentPlayingCard(
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontSize = 13.sp * playbackState.titleTextScale
                             ),
-                            textAlign = currentPlayingTextAlign(playbackState.textAlignment),
+                            textAlign = if (titleNeedsMarquee) {
+                                TextAlign.Left
+                            } else {
+                                currentPlayingTextAlign(playbackState.textAlignment)
+                            },
                             maxLines = 1,
                             overflow = TextOverflow.Clip,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .then(
-                                    if (playbackState.title.trim().length >= 29) {
+                                    if (titleNeedsMarquee) {
                                         Modifier.basicMarquee(
                                             iterations = Int.MAX_VALUE,
                                             initialDelayMillis = 0
@@ -938,13 +963,17 @@ private fun CurrentPlayingCard(
                         fontWeight = FontWeight.Normal,
                         fontSize = 11.sp * playbackState.artistTextScale
                     ),
-                    textAlign = currentPlayingTextAlign(playbackState.textAlignment),
+                    textAlign = if (artistNeedsMarquee) {
+                        TextAlign.Left
+                    } else {
+                        currentPlayingTextAlign(playbackState.textAlignment)
+                    },
                     maxLines = 1,
                     overflow = TextOverflow.Clip,
                     modifier = Modifier
                         .fillMaxWidth()
                         .then(
-                            if (playbackState.artist.trim().length >= 29) {
+                            if (artistNeedsMarquee) {
                                 Modifier.basicMarquee(
                                     iterations = Int.MAX_VALUE,
                                     initialDelayMillis = 0

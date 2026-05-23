@@ -10,7 +10,8 @@ HERTZ is a music-inspired live wallpaper for Android. It turns the current song 
 - Card visibility timeout after pause: immediately, 5s, 10s, 20s, 30s, 1m, 5m, or 10m
 - Adjustable artwork card size, text card width, card radius, frost, blur, text sizing, alignment, and placement
 - Gradient color picker with presets and draggable artwork sample points
-- Smooth in-app marquee for long song titles and artist names; lock-screen text stays clipped for better wallpaper performance
+- Smooth in-app marquee for long song titles and artist names
+- Lock-screen song and artist text respect the selected alignment and crop inside the card when too long
 - Local artwork cache for faster repeated songs
 - Battery protection that hides music cards at 20% battery or below
 
@@ -68,6 +69,7 @@ HERTZ samples the current cover art to build the wallpaper background.
 - `Custom` mode lets you drag three numbered anchor dots directly on the cover art preview.
 - The selected point colors are previewed in the app before applying the wallpaper.
 - Gradient brightness adjusts color richness/saturation instead of simply brightening the screen.
+- Near-black anchor picks render as neutral dark greys instead of introducing fake blue/purple tint.
 
 Palette extraction runs only when artwork or gradient settings change, using a downscaled image so the wallpaper stays lightweight.
 
