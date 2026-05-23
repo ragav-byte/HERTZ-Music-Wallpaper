@@ -759,6 +759,9 @@ private fun extractPalette(bitmap: Bitmap, anchors: List<PaletteAnchor>): List<I
     }
 
     if (selectedPalette.size >= 3) {
+        if (selectedPalette.take(3).all(::isNearBlackNeutral)) {
+            return neutralDarkPalette()
+        }
         val bridge = blendColors(
             blendColors(selectedPalette[0], selectedPalette[1], 0.50f),
             selectedPalette[2],
@@ -785,6 +788,15 @@ private fun fallbackPalette(): List<Int> {
         AndroidColor.argb(255, 110, 83, 120),
         AndroidColor.argb(255, 69, 86, 118),
         AndroidColor.argb(255, 38, 34, 46)
+    )
+}
+
+private fun neutralDarkPalette(): List<Int> {
+    return listOf(
+        AndroidColor.rgb(16, 16, 16),
+        AndroidColor.rgb(23, 23, 23),
+        AndroidColor.rgb(34, 34, 34),
+        AndroidColor.rgb(43, 43, 43)
     )
 }
 
@@ -903,6 +915,12 @@ private fun colorUsability(color: Int): Float {
     return saturation * 0.46f + value * 0.24f + darkPenalty + washedOutPenalty
 }
 
+private fun isNearBlackNeutral(color: Int): Boolean {
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color, hsv)
+    return hsv[2] <= 0.16f && hsv[1] <= 0.18f
+}
+
 private fun minColorDistance(color: Int, selected: List<Int>): Float {
     if (selected.isEmpty()) return 255f
     return selected.minOf { selectedColor ->
@@ -940,8 +958,13 @@ private fun preserveColorForWallpaper(color: Int, darkenAmount: Float): Int {
     val safeAmount = darkenAmount.coerceIn(0f, 0.22f)
     val hsv = FloatArray(3)
     AndroidColor.colorToHSV(color, hsv)
-    hsv[1] = (hsv[1] * 1.12f).coerceIn(0f, 1f)
-    hsv[2] = (hsv[2] * (1f - safeAmount)).coerceIn(0.22f, 1f)
+    if (isNearBlackNeutral(color)) {
+        hsv[1] = 0f
+        hsv[2] = (hsv[2] * (1f - safeAmount)).coerceIn(0.06f, 1f)
+    } else {
+        hsv[1] = (hsv[1] * 1.12f).coerceIn(0f, 1f)
+        hsv[2] = (hsv[2] * (1f - safeAmount)).coerceIn(0.22f, 1f)
+    }
     return AndroidColor.HSVToColor(AndroidColor.alpha(color), hsv)
 }
 
@@ -949,8 +972,13 @@ private fun enrichColorPresence(color: Int, factor: Float): Int {
     val normalizedFactor = ((factor - 1f) / 0.65f).coerceIn(-1f, 1f)
     val hsv = FloatArray(3)
     AndroidColor.colorToHSV(color, hsv)
-    hsv[1] = (hsv[1] * (1f + normalizedFactor * 0.48f) + max(0f, normalizedFactor) * 0.08f).coerceIn(0f, 1f)
-    hsv[2] = (hsv[2] * (1f + normalizedFactor * 0.10f)).coerceIn(0.18f, 1f)
+    if (isNearBlackNeutral(color)) {
+        hsv[1] = 0f
+        hsv[2] = (hsv[2] * (1f + max(0f, normalizedFactor) * 0.12f)).coerceIn(0.06f, 0.32f)
+    } else {
+        hsv[1] = (hsv[1] * (1f + normalizedFactor * 0.48f) + max(0f, normalizedFactor) * 0.08f).coerceIn(0f, 1f)
+        hsv[2] = (hsv[2] * (1f + normalizedFactor * 0.10f)).coerceIn(0.18f, 1f)
+    }
     return AndroidColor.HSVToColor(AndroidColor.alpha(color), hsv)
 }
 
