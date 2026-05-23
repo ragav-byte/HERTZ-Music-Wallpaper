@@ -54,13 +54,15 @@ object LiveWallpaperRenderer {
         val gradientBrightness = state.gradientBrightness.coerceIn(0.65f, 1.65f)
         val safeWidth = width.coerceAtLeast(1)
         val safeHeight = height.coerceAtLeast(1)
-        val sourceArtwork = state.artworkBitmap ?: loadFallbackArtwork(context)
+        val sourceArtwork = state.artworkBitmap
+            ?.takeIf { it.isUsableBitmap() }
+            ?: loadFallbackArtwork(context)
         val backgroundKey = BackgroundCacheKey(
             width = safeWidth,
             height = safeHeight,
             trackSignature = state.trackSignature,
             artworkSignature = state.artworkSignature,
-            artworkGenerationId = sourceArtwork.generationId,
+            artworkGenerationId = sourceArtwork.safeGenerationId(),
             blurBucket = (state.blurAmount * 100f).toInt(),
             brightnessBucket = (gradientBrightness * 100f).toInt()
         )
@@ -83,7 +85,7 @@ object LiveWallpaperRenderer {
         val output = background.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(output)
 
-        val coverRect = if (state.artworkBitmap != null) {
+        val coverRect = if (state.artworkBitmap?.isUsableBitmap() == true) {
             drawArtworkCard(canvas, state.artworkBitmap, state, safeWidth, safeHeight)
         } else {
             artworkCardRect(state, safeWidth, safeHeight)
@@ -697,29 +699,41 @@ private data class PaletteAnchor(
 )
 
 fun scaleAndCrop(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
-    val scale = max(targetWidth / source.width.toFloat(), targetHeight / source.height.toFloat())
-    val scaledWidth = max(1, (source.width * scale).toInt())
-    val scaledHeight = max(1, (source.height * scale).toInt())
-    val scaled = Bitmap.createScaledBitmap(source, scaledWidth, scaledHeight, true)
-    val x = max(0, (scaledWidth - targetWidth) / 2)
-    val y = max(0, (scaledHeight - targetHeight) / 2)
-    return Bitmap.createBitmap(
-        scaled,
-        x,
-        y,
-        min(targetWidth, scaled.width - x),
-        min(targetHeight, scaled.height - y)
-    )
+    val safeTargetWidth = targetWidth.coerceAtLeast(1)
+    val safeTargetHeight = targetHeight.coerceAtLeast(1)
+    return runCatching {
+        require(source.isUsableBitmap()) { "Invalid source bitmap" }
+        val scale = max(safeTargetWidth / source.width.toFloat(), safeTargetHeight / source.height.toFloat())
+        val scaledWidth = max(1, (source.width * scale).toInt())
+        val scaledHeight = max(1, (source.height * scale).toInt())
+        val scaled = Bitmap.createScaledBitmap(source, scaledWidth, scaledHeight, true)
+        val x = max(0, (scaledWidth - safeTargetWidth) / 2)
+        val y = max(0, (scaledHeight - safeTargetHeight) / 2)
+        Bitmap.createBitmap(
+            scaled,
+            x,
+            y,
+            min(safeTargetWidth, scaled.width - x).coerceAtLeast(1),
+            min(safeTargetHeight, scaled.height - y).coerceAtLeast(1)
+        )
+    }.getOrElse {
+        solidFallbackBitmap(safeTargetWidth, safeTargetHeight)
+    }
 }
 
 fun scaleForPalette(source: Bitmap): Bitmap {
+    if (!source.isUsableBitmap()) return solidFallbackBitmap(1, 1)
     val largestEdge = max(source.width, source.height).coerceAtLeast(1)
     val targetEdge = 96
     if (largestEdge <= targetEdge) return source
     val scale = targetEdge.toFloat() / largestEdge.toFloat()
     val targetWidth = max(1, (source.width * scale).toInt())
     val targetHeight = max(1, (source.height * scale).toInt())
-    return Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
+    return runCatching {
+        Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
+    }.getOrElse {
+        solidFallbackBitmap(1, 1)
+    }
 }
 
 fun fitText(text: String, paint: Paint, maxWidth: Float): String {
@@ -745,9 +759,14 @@ fun loadFallbackArtwork(context: Context): Bitmap {
 }
 
 private fun extractPalette(bitmap: Bitmap): List<Int> {
+    if (!bitmap.isUsableBitmap()) return fallbackPalette()
     val sampleWidth = min(72, bitmap.width.coerceAtLeast(1))
     val sampleHeight = min(72, bitmap.height.coerceAtLeast(1))
-    val sampledBitmap = Bitmap.createScaledBitmap(bitmap, sampleWidth, sampleHeight, true)
+    val sampledBitmap = runCatching {
+        Bitmap.createScaledBitmap(bitmap, sampleWidth, sampleHeight, true)
+    }.getOrElse {
+        return fallbackPalette()
+    }
     val selectedPalette = mutableListOf<Int>()
     val globalPalette = extractGlobalPalette(sampledBitmap)
 
@@ -781,6 +800,15 @@ private fun extractPalette(bitmap: Bitmap): List<Int> {
     }
 
     return selectedPalette.take(4)
+}
+
+private fun fallbackPalette(): List<Int> {
+    return listOf(
+        AndroidColor.argb(255, 182, 126, 126),
+        AndroidColor.argb(255, 110, 83, 120),
+        AndroidColor.argb(255, 69, 86, 118),
+        AndroidColor.argb(255, 38, 34, 46)
+    )
 }
 
 private fun dominantColorForAnchor(
@@ -983,6 +1011,20 @@ private fun quantizedColorKey(color: Int): Int {
     val green = AndroidColor.green(color) / 22
     val blue = AndroidColor.blue(color) / 22
     return (red shl 16) or (green shl 8) or blue
+}
+
+private fun Bitmap.isUsableBitmap(): Boolean {
+    return !isRecycled && width > 0 && height > 0
+}
+
+private fun Bitmap.safeGenerationId(): Int {
+    return runCatching { generationId }.getOrDefault(0)
+}
+
+private fun solidFallbackBitmap(width: Int, height: Int): Bitmap {
+    return Bitmap.createBitmap(width.coerceAtLeast(1), height.coerceAtLeast(1), Bitmap.Config.ARGB_8888).apply {
+        eraseColor(AndroidColor.argb(255, 38, 34, 46))
+    }
 }
 
 private class BucketAccumulator {

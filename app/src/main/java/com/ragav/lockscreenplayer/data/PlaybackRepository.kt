@@ -141,6 +141,7 @@ object PlaybackRepository {
     private var batteryReceiverRegistered = false
     @Volatile
     private var activeArtworkRequestKey: String? = null
+    private val badArtworkRequestKeys = linkedSetOf<String>()
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -490,6 +491,22 @@ object PlaybackRepository {
     }
 
     private fun syncFromController(controller: MediaController?) {
+        runCatching {
+            syncFromControllerSafely(controller)
+        }.onFailure {
+            activeArtworkRequestKey = null
+            mutableUiState.update { state ->
+                state.copy(
+                    hasSourceSession = controller != null || state.hasSourceSession,
+                    isPlaying = false,
+                    playbackSpeed = 0f,
+                    pausedAtMs = SystemClock.elapsedRealtime()
+                )
+            }
+        }
+    }
+
+    private fun syncFromControllerSafely(controller: MediaController?) {
         if (controller == null) {
             mutableUiState.update { state ->
                 state.copy(
@@ -502,18 +519,25 @@ object PlaybackRepository {
             return
         }
 
-        val metadata = controller.metadata
-        val description = metadata?.description
-        val packageName = controller.packageName.orEmpty()
-        val playbackState = controller.playbackState
+        val metadata = runCatching { controller.metadata }.getOrNull()
+        val description = runCatching { metadata?.description }.getOrNull()
+        val packageName = runCatching { controller.packageName }.getOrNull().orEmpty()
+        val playbackState = runCatching { controller.playbackState }.getOrNull()
         val playbackStateCode = playbackState?.state
-        val trackTitle = description?.title?.toString().orEmpty().ifBlank { uiState.value.title }
-        val trackArtist = description?.subtitle?.toString().orEmpty().ifBlank { uiState.value.artist }
-        val trackAlbum = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty()
+        val trackTitle = description?.title?.toString().orEmpty()
+            .ifBlank { metadata.safeString(MediaMetadata.METADATA_KEY_TITLE) }
+            .ifBlank { uiState.value.title.takeUnless { it == "Start playing your music" }.orEmpty() }
+            .ifBlank { "Unknown title" }
+        val trackArtist = description?.subtitle?.toString().orEmpty()
+            .ifBlank { metadata.safeString(MediaMetadata.METADATA_KEY_ARTIST) }
+            .ifBlank { metadata.safeString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) }
+            .ifBlank { uiState.value.artist.takeUnless { it == "The current song will appear here" }.orEmpty() }
+            .ifBlank { "Unknown artist" }
+        val trackAlbum = metadata.safeString(MediaMetadata.METADATA_KEY_ALBUM)
         val artworkUri = metadata?.preferredArtworkUri()
-        val metadataArtwork = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
-            ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
-            ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+        val metadataArtwork = metadata.safeBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+            ?: metadata.safeBitmap(MediaMetadata.METADATA_KEY_ART)
+            ?: metadata.safeBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
         val cacheKeys = artworkCacheKeys(
             packageName = packageName,
             title = trackTitle,
@@ -524,12 +548,12 @@ object PlaybackRepository {
         val isPlayingNow = playbackStateCode == PlaybackState.STATE_PLAYING
         val playbackSpeed = playbackState.playbackSpeedFor(isPlayingNow)
         val rawPosition = playbackState?.currentPositionMs(playbackSpeed)
-        val metadataDuration = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.coerceAtLeast(0L)
+        val metadataDuration = metadata.safeLong(MediaMetadata.METADATA_KEY_DURATION)?.coerceAtLeast(0L)
         val cachedDuration = cachedDurationMs(cacheKeys)
         if (metadataDuration != null && metadataDuration > 0L) {
             rememberDuration(cacheKeys, metadataDuration)
         }
-        val immediateArtwork = metadataArtwork?.resizedForWallpaper()
+        val immediateArtwork = metadataArtwork.safeResizedForWallpaper()
         if (immediateArtwork != null) {
             ArtworkCache.storeAsync(cacheKeys, immediateArtwork)
         }
@@ -543,11 +567,11 @@ object PlaybackRepository {
         val explicit = inferExplicitFlag(
             title = trackTitle,
             metadata = metadata,
-            extras = description?.extras
+            extras = runCatching { description?.extras }.getOrNull()
         ) || inferExplicitFlag(
             title = trackTitle,
             metadata = metadata,
-            extras = playbackState?.extras
+            extras = runCatching { playbackState?.extras }.getOrNull()
         )
 
         mutableUiState.update { state ->
@@ -574,6 +598,7 @@ object PlaybackRepository {
                 else -> state.positionMs
             }
             val resolvedDuration = metadataDuration ?: cachedDuration ?: if (signatureChanged) 0L else state.durationMs
+            val durationLimit = resolvedDuration.takeIf { it > 0L } ?: Long.MAX_VALUE
             val artworkCandidate = memoryArtwork ?: immediateArtwork
             val earlyTrackArtworkWindow = now - state.marqueeStartedAtMs <= 3_000L
             val resolvedArtwork = if (signatureChanged) {
@@ -627,7 +652,7 @@ object PlaybackRepository {
                 playbackSpeed = playbackSpeed,
                 pausedAtMs = if (isPlayingNow) 0L else if (state.pausedAtMs == 0L) now else state.pausedAtMs,
                 durationMs = resolvedDuration,
-                positionMs = resolvedPosition,
+                positionMs = resolvedPosition.coerceIn(0L, durationLimit),
                 positionCapturedAtMs = now,
                 trackSignature = signature,
                 marqueeStartedAtMs = if (signatureChanged || state.marqueeStartedAtMs == 0L) now else state.marqueeStartedAtMs
@@ -690,14 +715,17 @@ object PlaybackRepository {
             fallbackBitmap?.height?.toString().orEmpty()
         ).joinToString("|")
         if (activeArtworkRequestKey == requestKey) return
+        if (requestKey in badArtworkRequestKeys) return
         activeArtworkRequestKey = requestKey
 
         artworkScope.launch {
-            val loadedArtwork = if (!uri.isNullOrBlank()) {
-                loadArtworkFromUri(context, loader, signature, uri) ?: fallbackBitmap?.resizedForWallpaper()
-            } else {
-                fallbackBitmap?.resizedForWallpaper()
-            }
+            val loadedArtwork = runCatching {
+                if (!uri.isNullOrBlank()) {
+                    loadArtworkFromUri(context, loader, signature, uri) ?: fallbackBitmap.safeResizedForWallpaper()
+                } else {
+                    fallbackBitmap.safeResizedForWallpaper()
+                }
+            }.getOrNull()
 
             if (loadedArtwork != null) {
                 ArtworkCache.storeAsync(cacheKeys, loadedArtwork)
@@ -720,6 +748,8 @@ object PlaybackRepository {
                         }
                     }
                 }
+            } else {
+                rememberBadArtworkRequest(requestKey)
             }
 
             if (activeArtworkRequestKey == requestKey) {
@@ -748,10 +778,11 @@ object PlaybackRepository {
         } else {
             drawable.toBitmap()
         }
-        return bitmap.resizedForWallpaper()
+        return bitmap.safeResizedForWallpaper()
     }
 
     private fun Bitmap.resizedForWallpaper(): Bitmap {
+        require(!isRecycled && width > 0 && height > 0) { "Invalid artwork bitmap" }
         val largestEdge = max(width, height).coerceAtLeast(1)
         if (largestEdge <= TARGET_ARTWORK_SIZE) return this
         val scale = TARGET_ARTWORK_SIZE.toFloat() / largestEdge.toFloat()
@@ -760,10 +791,31 @@ object PlaybackRepository {
         return Bitmap.createScaledBitmap(this, targetWidth, targetHeight, true)
     }
 
+    private fun Bitmap?.safeResizedForWallpaper(): Bitmap? {
+        return runCatching {
+            this?.takeUnless { it.isRecycled || it.width <= 0 || it.height <= 0 }
+                ?.resizedForWallpaper()
+        }.getOrNull()
+    }
+
     private fun MediaMetadata.preferredArtworkUri(): String? {
-        return getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)?.takeIf { it.isNotBlank() }
-            ?: getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)?.takeIf { it.isNotBlank() }
-            ?: getString(MediaMetadata.METADATA_KEY_ART_URI)?.takeIf { it.isNotBlank() }
+        return safeString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI).takeIf { it.isNotBlank() }
+            ?: safeString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI).takeIf { it.isNotBlank() }
+            ?: safeString(MediaMetadata.METADATA_KEY_ART_URI).takeIf { it.isNotBlank() }
+    }
+
+    private fun MediaMetadata?.safeString(key: String): String {
+        return runCatching { this?.getString(key).orEmpty() }.getOrDefault("")
+    }
+
+    private fun MediaMetadata?.safeLong(key: String): Long? {
+        return runCatching { this?.getLong(key) }.getOrNull()
+    }
+
+    private fun MediaMetadata?.safeBitmap(key: String): Bitmap? {
+        return runCatching {
+            this?.getBitmap(key)?.takeUnless { it.isRecycled || it.width <= 0 || it.height <= 0 }
+        }.getOrNull()
     }
 
     private fun artworkCacheKeys(
@@ -844,7 +896,8 @@ object PlaybackRepository {
             "isExplicit"
         )
 
-        val extrasFlag = extras?.let { bundle ->
+        val extrasFlag = runCatching {
+            extras?.let { bundle ->
             explicitExtraKeys.any { key ->
                 bundleValueMeansExplicit(bundle, key)
             } || bundle.keySet().any { key ->
@@ -854,19 +907,22 @@ object PlaybackRepository {
                     normalized.contains("rating")
                 looksRelevant && bundleValueMeansExplicit(bundle, key)
             }
-        } ?: false
+            } ?: false
+        }.getOrDefault(false)
         if (extrasFlag) return true
 
-        val metadataFlag = metadata?.run {
+        val metadataFlag = runCatching {
+            metadata?.run {
             keySet().any { key ->
                 val normalized = key.lowercase()
                 val looksRelevant = normalized.contains("explicit") ||
                     normalized.contains("advisory") ||
                     normalized.contains("rating")
                 if (!looksRelevant) return@any false
-                getLong(key) == 1L || getString(key).isExplicitText()
+                safeLong(key) == 1L || safeString(key).isExplicitText()
             }
-        } ?: false
+            } ?: false
+        }.getOrDefault(false)
         if (metadataFlag) return true
 
         return title.hasExplicitMarker()
@@ -874,7 +930,7 @@ object PlaybackRepository {
 
     private fun bundleValueMeansExplicit(bundle: Bundle, key: String): Boolean {
         if (!bundle.containsKey(key)) return false
-        return when (val value = bundle.get(key)) {
+        return when (val value = runCatching { bundle.get(key) }.getOrNull()) {
             is Boolean -> value
             is Int -> value == 1
             is Long -> value == 1L
@@ -966,21 +1022,23 @@ object PlaybackRepository {
     }
 
     private fun chooseSharperArtwork(current: Bitmap?, candidate: Bitmap?): Bitmap? {
-        if (candidate == null) return current
-        if (current == null) return candidate
-        val currentPixels = current.width * current.height
-        val candidatePixels = candidate.width * candidate.height
-        return if (candidatePixels >= (currentPixels * 1.18f).toInt()) candidate else current
+        val safeCandidate = candidate?.takeUnless { it.isRecycled || it.width <= 0 || it.height <= 0 } ?: return current
+        val safeCurrent = current?.takeUnless { it.isRecycled || it.width <= 0 || it.height <= 0 }
+        if (safeCurrent == null) return safeCandidate
+        val currentPixels = safeCurrent.width * safeCurrent.height
+        val candidatePixels = safeCandidate.width * safeCandidate.height
+        return if (candidatePixels >= (currentPixels * 1.18f).toInt()) safeCandidate else safeCurrent
     }
 
     private fun chooseSessionArtwork(current: Bitmap?, candidate: Bitmap): Bitmap {
-        if (current == null) return candidate
-        val currentPixels = current.width * current.height
-        val candidatePixels = candidate.width * candidate.height
+        val safeCandidate = candidate.takeUnless { it.isRecycled || it.width <= 0 || it.height <= 0 } ?: return current ?: candidate
+        val safeCurrent = current?.takeUnless { it.isRecycled || it.width <= 0 || it.height <= 0 } ?: return safeCandidate
+        val currentPixels = safeCurrent.width * safeCurrent.height
+        val candidatePixels = safeCandidate.width * safeCandidate.height
         return if (candidatePixels >= (currentPixels * 1.10f).toInt()) {
-            candidate
+            safeCandidate
         } else {
-            current
+            safeCurrent
         }
     }
 
@@ -995,6 +1053,16 @@ object PlaybackRepository {
         if (speed <= 0f || updatedAt <= 0L) return basePosition
         val elapsedSincePlayerUpdate = ((SystemClock.elapsedRealtime() - updatedAt).coerceAtLeast(0L) * speed).toLong()
         return basePosition + elapsedSincePlayerUpdate
+    }
+
+    private fun rememberBadArtworkRequest(requestKey: String) {
+        if (requestKey.isBlank()) return
+        synchronized(badArtworkRequestKeys) {
+            badArtworkRequestKeys += requestKey
+            while (badArtworkRequestKeys.size > 16) {
+                badArtworkRequestKeys.remove(badArtworkRequestKeys.first())
+            }
+        }
     }
 
     private fun requirePrefs() =
