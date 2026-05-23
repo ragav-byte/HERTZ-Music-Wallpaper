@@ -258,7 +258,7 @@ class MainActivity : ComponentActivity() {
 
     private fun openSupportEmail() {
         val emailIntent = Intent(Intent.ACTION_SENDTO).apply {
-            data = Uri.parse("mailto:ragavkrishna4535@gmail.com")
+            data = Uri.parse("mailto:hertzmusic26@gmail.com")
             putExtra(Intent.EXTRA_SUBJECT, "HERTZ Support / Report a problem")
         }
         runCatching {
@@ -666,7 +666,7 @@ private fun WallpaperStudioScreen(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 Text(
-                    text = "This opens your email app with the receiver set to ragavkrishna4535@gmail.com.",
+                    text = "This opens your email app with the receiver set to hertzmusic26@gmail.com.",
                     color = Color(0xFFD2D1DB),
                     style = MaterialTheme.typography.bodySmall
                 )
