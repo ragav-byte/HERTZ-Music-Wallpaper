@@ -17,21 +17,11 @@ HERTZ is a music-inspired live wallpaper for Android. It turns the current song 
 
 Release screenshots are stored in `screenshots/` so the README previews the app and wallpaper directly on GitHub.
 
-### App Screens
+Swipe sideways to see the full gallery.
 
-| Setup and current playing | Card visibility | Configuration |
-| --- | --- | --- |
-| ![Setup and current playing](screenshots/app-requirements-current-playing.png) | ![Card visibility](screenshots/app-card-visibility.png) | ![Configuration controls](screenshots/app-configuration.png) |
-
-| Preview | Apply wallpaper |
-| --- | --- |
-| ![Live wallpaper preview](screenshots/app-preview.png) | ![Apply wallpaper dialog](screenshots/app-apply-wallpaper.png) |
-
-### Lock Screen Examples
-
-| Pink artwork | Dark artwork |
-| --- | --- |
-| ![Pink lock screen wallpaper](screenshots/lockscreen-pink-card.png) | ![Dark lock screen wallpaper](screenshots/lockscreen-dark-card.png) |
+| Setup | Card visibility | Configuration | Preview | Apply wallpaper | Lock screen | Dark lock screen |
+| --- | --- | --- | --- | --- | --- | --- |
+| <img src="screenshots/app-requirements-current-playing.png" width="180" alt="Setup and current playing"> | <img src="screenshots/app-card-visibility.png" width="180" alt="Card visibility"> | <img src="screenshots/app-configuration.png" width="180" alt="Configuration controls"> | <img src="screenshots/app-preview.png" width="180" alt="Live wallpaper preview"> | <img src="screenshots/app-apply-wallpaper.png" width="180" alt="Apply wallpaper dialog"> | <img src="screenshots/lockscreen-pink-card.png" width="180" alt="Pink lock screen wallpaper"> | <img src="screenshots/lockscreen-dark-card.png" width="180" alt="Dark lock screen wallpaper"> |
 
 ## How HERTZ Gets Music Data
 
