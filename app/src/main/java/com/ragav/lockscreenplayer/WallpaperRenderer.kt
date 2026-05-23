@@ -690,6 +690,12 @@ private data class PaletteBucket(
     val coverage: Float
 )
 
+private data class PaletteAnchor(
+    val xRatio: Float,
+    val yRatio: Float,
+    val radiusRatio: Float
+)
+
 fun scaleAndCrop(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
     val scale = max(targetWidth / source.width.toFloat(), targetHeight / source.height.toFloat())
     val scaledWidth = max(1, (source.width * scale).toInt())
@@ -742,49 +748,71 @@ private fun extractPalette(bitmap: Bitmap): List<Int> {
     val sampleWidth = min(72, bitmap.width.coerceAtLeast(1))
     val sampleHeight = min(72, bitmap.height.coerceAtLeast(1))
     val sampledBitmap = Bitmap.createScaledBitmap(bitmap, sampleWidth, sampleHeight, true)
-    val verticalPalette = mutableListOf<Int>()
-
-    repeat(4) { bandIndex ->
-        val startY = (sampledBitmap.height * bandIndex) / 4
-        val endY = ((sampledBitmap.height * (bandIndex + 1)) / 4).coerceAtLeast(startY + 1)
-        dominantColorForBand(sampledBitmap, startY, endY)?.let(verticalPalette::add)
-    }
-
+    val selectedPalette = mutableListOf<Int>()
     val globalPalette = extractGlobalPalette(sampledBitmap)
-    globalPalette.forEach { color ->
-        if (verticalPalette.size < 4) {
-            verticalPalette += color
+
+    val anchors = listOf(
+        PaletteAnchor(xRatio = 0.08f, yRatio = 0.12f, radiusRatio = 0.18f),
+        PaletteAnchor(xRatio = 0.50f, yRatio = 0.52f, radiusRatio = 0.20f),
+        PaletteAnchor(xRatio = 0.90f, yRatio = 0.88f, radiusRatio = 0.18f)
+    )
+
+    anchors.forEach { anchor ->
+        val anchorColor = dominantColorForAnchor(sampledBitmap, anchor, selectedPalette)
+            ?: nextDistinctGlobalColor(globalPalette, selectedPalette)
+        anchorColor?.let { color ->
+            selectedPalette += if (selectedPalette.any { selected -> colorDistance(selected, color) < 28f }) {
+                nextDistinctGlobalColor(globalPalette, selectedPalette) ?: color
+            } else {
+                color
+            }
         }
     }
 
-    while (verticalPalette.size < 4) {
-        val last = verticalPalette.lastOrNull() ?: AndroidColor.argb(255, 182, 126, 126)
-        verticalPalette += if (verticalPalette.isEmpty()) {
+    nextDistinctGlobalColor(globalPalette, selectedPalette)?.let { selectedPalette += it }
+
+    while (selectedPalette.size < 4) {
+        val last = selectedPalette.lastOrNull() ?: AndroidColor.argb(255, 182, 126, 126)
+        selectedPalette += if (selectedPalette.isEmpty()) {
             last
         } else {
-            blendColors(verticalPalette.first(), last, 0.5f)
+            blendColors(selectedPalette.first(), last, 0.5f)
         }
     }
 
-    return verticalPalette.take(4)
+    return selectedPalette.take(4)
 }
 
-private fun dominantColorForBand(bitmap: Bitmap, startY: Int, endY: Int): Int? {
+private fun dominantColorForAnchor(
+    bitmap: Bitmap,
+    anchor: PaletteAnchor,
+    selectedColors: List<Int>
+): Int? {
     val buckets = LinkedHashMap<Int, BucketAccumulator>()
-    val safeStart = startY.coerceIn(0, bitmap.height)
-    val safeEnd = endY.coerceIn(safeStart, bitmap.height)
-    if (safeStart >= safeEnd) return null
+    val centerX = ((bitmap.width - 1).coerceAtLeast(0) * anchor.xRatio).toInt().coerceIn(0, bitmap.width - 1)
+    val centerY = ((bitmap.height - 1).coerceAtLeast(0) * anchor.yRatio).toInt().coerceIn(0, bitmap.height - 1)
+    val radiusX = max(4, (bitmap.width * anchor.radiusRatio).toInt())
+    val radiusY = max(4, (bitmap.height * anchor.radiusRatio).toInt())
+    val startX = (centerX - radiusX).coerceAtLeast(0)
+    val endX = (centerX + radiusX).coerceAtMost(bitmap.width - 1)
+    val startY = (centerY - radiusY).coerceAtLeast(0)
+    val endY = (centerY + radiusY).coerceAtMost(bitmap.height - 1)
+    var sampledPixels = 0
 
-    for (x in 0 until bitmap.width) {
-        for (y in safeStart until safeEnd) {
+    for (x in startX..endX) {
+        for (y in startY..endY) {
+            val normalizedX = (x - centerX).toFloat() / radiusX.toFloat()
+            val normalizedY = (y - centerY).toFloat() / radiusY.toFloat()
+            if (normalizedX * normalizedX + normalizedY * normalizedY > 1f) continue
             val pixel = bitmap.getPixel(x, y)
             val bucketKey = quantizedColorKey(pixel)
             val bucket = buckets.getOrPut(bucketKey) { BucketAccumulator() }
             bucket.add(pixel)
+            sampledPixels += 1
         }
     }
 
-    val totalPixels = (bitmap.width * (safeEnd - safeStart)).coerceAtLeast(1)
+    val totalPixels = sampledPixels.coerceAtLeast(1)
     val rankedBuckets = buckets.values
         .map { accumulator ->
             PaletteBucket(
@@ -793,10 +821,25 @@ private fun dominantColorForBand(bitmap: Bitmap, startY: Int, endY: Int): Int? {
             )
         }
         .sortedByDescending { bucket ->
-            bucket.coverage * 2.8f + paletteInterest(bucket.color) * 0.20f
+            bucket.coverage * 1.70f +
+                paletteInterest(bucket.color) * 0.92f +
+                colorUsability(bucket.color) +
+                minColorDistance(bucket.color, selectedColors) / 520f
         }
 
     return rankedBuckets.firstOrNull()?.color
+}
+
+private fun nextDistinctGlobalColor(globalPalette: List<Int>, selectedColors: List<Int>): Int? {
+    return globalPalette
+        .filterNot { candidate ->
+            selectedColors.any { selected -> colorDistance(candidate, selected) < 32f }
+        }
+        .maxByOrNull { candidate ->
+            paletteInterest(candidate) * 0.82f +
+                colorUsability(candidate) * 0.55f +
+                minColorDistance(candidate, selectedColors) / 460f
+        }
 }
 
 private fun extractGlobalPalette(sampledBitmap: Bitmap): List<Int> {
@@ -857,6 +900,20 @@ private fun paletteInterest(color: Int): Float {
     val saturation = hsv[1]
     val value = hsv[2]
     return saturation * 1.22f + value * 0.26f
+}
+
+private fun colorUsability(color: Int): Float {
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color, hsv)
+    val saturation = hsv[1]
+    val value = hsv[2]
+    val darkPenalty = when {
+        value < 0.08f -> -0.70f
+        value < 0.16f -> -0.34f
+        else -> 0f
+    }
+    val washedOutPenalty = if (saturation < 0.08f && value > 0.86f) -0.24f else 0f
+    return saturation * 0.46f + value * 0.24f + darkPenalty + washedOutPenalty
 }
 
 private fun minColorDistance(color: Int, selected: List<Int>): Float {
