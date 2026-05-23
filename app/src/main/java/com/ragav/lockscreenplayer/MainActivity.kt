@@ -15,6 +15,7 @@ import android.view.View
 import android.view.WindowInsetsController
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.MarqueeAnimationMode
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -945,10 +946,7 @@ private fun CurrentPlayingCard(
                                 .fillMaxWidth()
                                 .then(
                                     if (titleNeedsMarquee) {
-                                        Modifier.basicMarquee(
-                                            iterations = Int.MAX_VALUE,
-                                            initialDelayMillis = 0
-                                        )
+                                        Modifier.currentPlayingMarquee()
                                     } else {
                                         Modifier
                                     }
@@ -977,10 +975,7 @@ private fun CurrentPlayingCard(
                         .fillMaxWidth()
                         .then(
                             if (artistNeedsMarquee) {
-                                Modifier.basicMarquee(
-                                    iterations = Int.MAX_VALUE,
-                                    initialDelayMillis = 0
-                                )
+                                Modifier.currentPlayingMarquee()
                             } else {
                                 Modifier
                             }
@@ -1393,18 +1388,28 @@ private fun pauseHoldDescription(durationMs: Long): String {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+private fun Modifier.currentPlayingMarquee(): Modifier {
+    return basicMarquee(
+        iterations = Int.MAX_VALUE,
+        animationMode = MarqueeAnimationMode.Immediately,
+        initialDelayMillis = 0,
+        velocity = 46.dp
+    )
+}
+
 @Composable
 private fun ExplicitTagBadge() {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(4.dp))
-            .background(Color.White.copy(alpha = 0.20f))
+            .background(Color.White.copy(alpha = 0.92f))
             .padding(horizontal = 5.dp, vertical = 1.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = "E",
-            color = Color.White.copy(alpha = 0.94f),
+            color = Color.Black.copy(alpha = 0.58f),
             style = MaterialTheme.typography.titleMedium.copy(fontSize = 10.sp)
         )
     }

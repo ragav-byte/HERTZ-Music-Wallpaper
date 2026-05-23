@@ -442,17 +442,26 @@ object LiveWallpaperRenderer {
         val titleY = rect.top + rect.height() * 0.30f + textAreaShiftY
         val artistY = rect.top + rect.height() * 0.54f + textAreaShiftY
         val timelineY = rect.top + rect.height() * 0.80f + textAreaShiftY
-        val align = state.textAlignment.toPaintAlign()
+        val titleAlignment = if (state.title.trim().length >= 29) {
+            TextAlignmentOption.LEFT
+        } else {
+            state.textAlignment
+        }
+        val artistAlignment = if (state.artist.trim().length >= 29) {
+            TextAlignmentOption.LEFT
+        } else {
+            state.textAlignment
+        }
 
         val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.argb(255, 255, 255, 255)
-            textAlign = align
+            textAlign = titleAlignment.toPaintAlign()
             textSize = width * 0.032f * state.titleTextScale
             typeface = calSans
         }
         val artistPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.argb((255 * 0.65f).toInt(), 255, 255, 255)
-            textAlign = align
+            textAlign = artistAlignment.toPaintAlign()
             textSize = width * 0.024f * state.artistTextScale
             typeface = calSans
         }
@@ -465,7 +474,7 @@ object LiveWallpaperRenderer {
             left = contentLeft,
             right = contentRight,
             baselineY = titleY,
-            alignment = state.textAlignment,
+            alignment = titleAlignment,
             typeface = calSans
         )
         drawSmartText(
@@ -475,7 +484,7 @@ object LiveWallpaperRenderer {
             left = contentLeft,
             right = contentRight,
             baselineY = artistY,
-            alignment = state.textAlignment
+            alignment = artistAlignment
         )
 
         drawTimeline(canvas, rect, contentLeft, contentRight, timelineY, state, calSans)
@@ -594,10 +603,10 @@ private fun drawExplicitBadge(
         centerY + size * 0.45f
     )
     val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = AndroidColor.argb(52, 255, 255, 255)
+        color = AndroidColor.argb(235, 255, 255, 255)
     }
     val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = AndroidColor.argb(238, 255, 255, 255)
+        color = AndroidColor.argb(148, 0, 0, 0)
         textAlign = Paint.Align.CENTER
         textSize = size * 0.70f
         this.typeface = typeface
