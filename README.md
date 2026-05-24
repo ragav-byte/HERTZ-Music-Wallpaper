@@ -27,9 +27,9 @@ Swipe sideways to see the full gallery.
 
 ## Download APK
 
-[Download the latest debug APK](https://github.com/ragav-byte/HERTZ-Music-Wallpaper/raw/main/downloads/HERTZ-Music-Wallpaper-debug.apk)
+[Download the latest release APK](https://github.com/ragav-byte/HERTZ-Music-Wallpaper/raw/main/playstore_apk/HERTZ-Music-Wallpaper-v1.0-release.apk)
 
-This APK is included for testing before the broader app-store release.
+This signed release APK is included for testing before the broader app-store release.
 
 ## How HERTZ Gets Music Data
 
@@ -122,9 +122,9 @@ No account login, remote analytics, or cloud sync is required for the core wallp
 6. Pick `With card` or `No card`.
 7. Apply it to the lock screen, home screen, or both.
 
-APK path after building:
+Release APK path after building:
 
-`app/build/outputs/apk/debug/app-debug.apk`
+`playstore_apk/HERTZ-Music-Wallpaper-v1.0-release.apk`
 
 ## Notice
 

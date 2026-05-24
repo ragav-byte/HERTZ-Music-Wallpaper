@@ -140,6 +140,7 @@ class MainActivity : ComponentActivity() {
                     onSetGradientAnchorPreset = PlaybackRepository::setGradientAnchorPreset,
                     onSetGradientAnchor = PlaybackRepository::setGradientAnchor,
                     onSetPreserveArtworkOnReboot = PlaybackRepository::setPreserveArtworkOnReboot,
+                    onSetLockscreenMarqueeEnabled = PlaybackRepository::setLockscreenMarqueeEnabled,
                     onSetTextAlignment = PlaybackRepository::setTextAlignment,
                     onResetLayout = PlaybackRepository::resetLayout
                 )
@@ -318,6 +319,7 @@ private fun WallpaperStudioScreen(
     onSetGradientAnchorPreset: (GradientAnchorPreset) -> Unit,
     onSetGradientAnchor: (Int, Float, Float) -> Unit,
     onSetPreserveArtworkOnReboot: (Boolean) -> Unit,
+    onSetLockscreenMarqueeEnabled: (Boolean) -> Unit,
     onSetTextAlignment: (TextAlignmentOption) -> Unit,
     onResetLayout: () -> Unit
 ) {
@@ -584,6 +586,18 @@ private fun WallpaperStudioScreen(
                     enabledLabel = "On",
                     disabledLabel = "Off",
                     onEnabledChange = onSetPreserveArtworkOnReboot
+                )
+
+                Text(
+                    text = "Lockscreen marquee",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                BooleanChoiceRow(
+                    enabled = playbackState.lockscreenMarqueeEnabled,
+                    enabledLabel = "On",
+                    disabledLabel = "Off",
+                    onEnabledChange = onSetLockscreenMarqueeEnabled
                 )
 
                 Text(
@@ -881,8 +895,8 @@ private fun CurrentPlayingCard(
     onOpenSourceApp: (String) -> Unit
 ) {
     val timelineText by rememberPlaybackPositionText(playbackState)
-    val titleNeedsMarquee = playbackState.title.trim().length >= 29
-    val artistNeedsMarquee = playbackState.artist.trim().length >= 29
+    val titleNeedsMarquee = playbackState.title.trim().length >= 16
+    val artistNeedsMarquee = playbackState.artist.trim().length >= 20
 
     InfoCard(
         title = "Current playing",

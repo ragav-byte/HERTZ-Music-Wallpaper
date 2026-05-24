@@ -7,6 +7,8 @@ import android.graphics.Color as AndroidColor
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
@@ -23,6 +25,9 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
+
+private const val LOCKSCREEN_MARQUEE_START_DELAY_MS = 2_000L
+private const val LOCKSCREEN_MARQUEE_PX_PER_SECOND = 88f
 
 object LiveWallpaperRenderer {
     private data class BackgroundCacheKey(
@@ -55,6 +60,7 @@ object LiveWallpaperRenderer {
         width: Int,
         height: Int,
         phase: Float = 0f,
+        marqueeElapsedMs: Long = 0L,
         drawCards: Boolean = true
     ): Bitmap {
         val gradientBrightness = state.gradientBrightness.coerceIn(0.65f, 1.65f)
@@ -103,9 +109,36 @@ object LiveWallpaperRenderer {
         } else {
             artworkCardRect(state, safeWidth, safeHeight)
         }
-        drawPlayerCard(canvas, state, safeWidth, safeHeight, coverRect, context, background)
+        drawPlayerCard(canvas, state, safeWidth, safeHeight, coverRect, context, background, marqueeElapsedMs)
 
         return output
+    }
+
+    fun hasLockscreenTextOverflow(
+        context: Context,
+        state: PlaybackUiState,
+        width: Int,
+        height: Int,
+        drawCards: Boolean
+    ): Boolean {
+        if (!drawCards || width <= 0 || height <= 0) return false
+        val safeWidth = width.coerceAtLeast(1)
+        val safeHeight = height.coerceAtLeast(1)
+        val coverRect = artworkCardRect(state, safeWidth, safeHeight)
+        val panelRect = playerCardRect(state, safeWidth, safeHeight, coverRect)
+        val textBounds = playerCardTextBounds(state, panelRect)
+        val calSans = ResourcesCompat.getFont(context, R.font.calsans_regular)
+            ?: Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = safeWidth * 0.032f * state.titleTextScale
+            typeface = calSans
+        }
+        val artistPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = safeWidth * 0.024f * state.artistTextScale
+            typeface = calSans
+        }
+        return titleVisualWidth(state.title, state.isExplicit, titlePaint) > textBounds.width() ||
+            artistPaint.measureText(state.artist.trim()) > textBounds.width()
     }
 
     private fun createBackground(
@@ -382,17 +415,11 @@ object LiveWallpaperRenderer {
         height: Int,
         coverRect: RectF,
         context: Context,
-        backdropBitmap: Bitmap
+        backdropBitmap: Bitmap,
+        marqueeElapsedMs: Long
     ) {
-        val panelWidth = (width * state.playerCardWidthScale)
-            .coerceIn(width * 0.56f, width * 0.96f)
-        val panelHeight = height * 0.094f
-        val panelLeft = ((width - panelWidth) / 2f + width * 0.22f * state.cardOffsetX)
-            .coerceIn(width * 0.04f, width - panelWidth - width * 0.04f)
-        val defaultTop = coverRect.bottom + height * 0.028f
-        val panelTop = (defaultTop + height * 0.10f * state.playerCardOffsetY)
-            .coerceIn(height * 0.04f, height - panelHeight - height * 0.05f)
-        val rect = RectF(panelLeft, panelTop, panelLeft + panelWidth, panelTop + panelHeight)
+        val rect = playerCardRect(state, width, height, coverRect)
+        val panelHeight = rect.height()
         val radius = min(panelHeight * (0.20f + state.cardCornerRadius * 0.7f), 58f)
         val calSans = ResourcesCompat.getFont(context, R.font.calsans_regular)
             ?: Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -435,23 +462,15 @@ object LiveWallpaperRenderer {
         canvas.restore()
         canvas.drawRoundRect(rect, radius, radius, borderPaint)
 
-        val textAreaShiftX = rect.width() * 0.10f * state.textOffsetX
+        val textBounds = playerCardTextBounds(state, rect)
         val textAreaShiftY = rect.height() * 0.10f * state.textOffsetY
-        val contentLeft = rect.left + rect.width() * 0.08f + textAreaShiftX
-        val contentRight = rect.right - rect.width() * 0.08f + textAreaShiftX
+        val contentLeft = textBounds.left
+        val contentRight = textBounds.right
         val titleY = rect.top + rect.height() * 0.30f + textAreaShiftY
         val artistY = rect.top + rect.height() * 0.54f + textAreaShiftY
         val timelineY = rect.top + rect.height() * 0.80f + textAreaShiftY
-        val titleAlignment = if (state.title.trim().length >= 29) {
-            TextAlignmentOption.LEFT
-        } else {
-            state.textAlignment
-        }
-        val artistAlignment = if (state.artist.trim().length >= 29) {
-            TextAlignmentOption.LEFT
-        } else {
-            state.textAlignment
-        }
+        val titleAlignment = state.textAlignment
+        val artistAlignment = state.textAlignment
 
         val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.argb(255, 255, 255, 255)
@@ -475,7 +494,8 @@ object LiveWallpaperRenderer {
             right = contentRight,
             baselineY = titleY,
             alignment = titleAlignment,
-            typeface = calSans
+            typeface = calSans,
+            marqueeElapsedMs = marqueeElapsedMs
         )
         drawSmartText(
             canvas = canvas,
@@ -484,7 +504,8 @@ object LiveWallpaperRenderer {
             left = contentLeft,
             right = contentRight,
             baselineY = artistY,
-            alignment = artistAlignment
+            alignment = artistAlignment,
+            marqueeElapsedMs = marqueeElapsedMs
         )
 
         drawTimeline(canvas, rect, contentLeft, contentRight, timelineY, state, calSans)
@@ -507,28 +528,64 @@ object LiveWallpaperRenderer {
         }
         val currentPosition = (state.positionMs + elapsed).coerceAtMost(effectiveDuration)
         val progress = (currentPosition.toFloat() / effectiveDuration.toFloat()).coerceIn(0f, 1f)
+        val currentText = formatTime(currentPosition)
+        val durationText = formatTime(effectiveDuration)
+
+        val timePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = AndroidColor.argb(230, 255, 255, 255)
+            textSize = rect.height() * 0.11f + 4f
+            typeface = calSans
+        }
+        val currentTextWidth = timePaint.measureText(currentText)
+        val durationTextWidth = timePaint.measureText(durationText)
+        val timelineGap = rect.height() * 0.10f
+        val trackLeft = (left + currentTextWidth + timelineGap).coerceAtMost(right)
+        val trackRight = (right - durationTextWidth - timelineGap).coerceAtLeast(trackLeft)
+        val textBaseline = centerY - (timePaint.descent() + timePaint.ascent()) / 2f
 
         val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.argb(120, 255, 255, 255)
-            strokeWidth = rect.height() * 0.04f
+            strokeWidth = rect.height() * 0.04f + 2f
             strokeCap = Paint.Cap.ROUND
         }
         val progressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.argb(235, 255, 255, 255)
-            strokeWidth = rect.height() * 0.04f
+            strokeWidth = rect.height() * 0.04f + 2f
             strokeCap = Paint.Cap.ROUND
         }
-        canvas.drawLine(left, centerY, right, centerY, trackPaint)
-        canvas.drawLine(left, centerY, left + (right - left) * progress, centerY, progressPaint)
+        canvas.drawText(currentText, left, textBaseline, timePaint)
 
-        val timePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.argb(230, 255, 255, 255)
-            textSize = rect.height() * 0.11f + 2f
-            typeface = calSans
+        if (trackRight > trackLeft + 1f) {
+            canvas.drawLine(trackLeft, centerY, trackRight, centerY, trackPaint)
+            canvas.drawLine(trackLeft, centerY, trackLeft + (trackRight - trackLeft) * progress, centerY, progressPaint)
         }
-        canvas.drawText(formatTime(currentPosition), left, centerY - rect.height() * 0.07f, timePaint)
+
         timePaint.textAlign = Paint.Align.RIGHT
-        canvas.drawText(formatTime(effectiveDuration), right, centerY - rect.height() * 0.07f, timePaint)
+        canvas.drawText(durationText, right, textBaseline, timePaint)
+    }
+
+    private fun playerCardRect(
+        state: PlaybackUiState,
+        width: Int,
+        height: Int,
+        coverRect: RectF
+    ): RectF {
+        val panelWidth = (width * state.playerCardWidthScale)
+            .coerceIn(width * 0.56f, width * 0.96f)
+        val panelHeight = height * 0.094f
+        val panelLeft = ((width - panelWidth) / 2f + width * 0.22f * state.cardOffsetX)
+            .coerceIn(width * 0.04f, width - panelWidth - width * 0.04f)
+        val defaultTop = coverRect.bottom + height * 0.028f
+        val panelTop = (defaultTop + height * 0.10f * state.playerCardOffsetY)
+            .coerceIn(height * 0.04f, height - panelHeight - height * 0.05f)
+        return RectF(panelLeft, panelTop, panelLeft + panelWidth, panelTop + panelHeight)
+    }
+
+    private fun playerCardTextBounds(state: PlaybackUiState, rect: RectF): RectF {
+        val textAreaShiftX = rect.width() * 0.10f * state.textOffsetX
+        val contentLeft = rect.left + rect.width() * 0.08f + textAreaShiftX
+        val contentRight = rect.right - rect.width() * 0.08f + textAreaShiftX
+        return RectF(contentLeft, rect.top, contentRight, rect.bottom)
     }
 
 }
@@ -542,7 +599,8 @@ private fun drawTitleText(
     right: Float,
     baselineY: Float,
     alignment: TextAlignmentOption,
-    typeface: Typeface
+    typeface: Typeface,
+    marqueeElapsedMs: Long = 0L
 ) {
     if (!isExplicit) {
         drawSmartText(
@@ -552,7 +610,8 @@ private fun drawTitleText(
             left = left,
             right = right,
             baselineY = baselineY,
-            alignment = alignment
+            alignment = alignment,
+            marqueeElapsedMs = marqueeElapsedMs
         )
         return
     }
@@ -565,11 +624,29 @@ private fun drawTitleText(
     val badgeGap = paint.textSize * 0.26f
     val badgeWidth = badgeSize
     val fullTextWidth = paint.measureText(trimmed)
+    val groupWidth = fullTextWidth + badgeGap + badgeWidth
+
+    if (marqueeElapsedMs > 0L && groupWidth > availableWidth) {
+        drawMarqueeTitleWithBadge(
+            canvas = canvas,
+            text = trimmed,
+            paint = paint,
+            left = left,
+            right = right,
+            baselineY = baselineY,
+            textWidth = fullTextWidth,
+            badgeGap = badgeGap,
+            badgeWidth = badgeWidth,
+            badgeSize = badgeSize,
+            typeface = typeface,
+            marqueeElapsedMs = marqueeElapsedMs
+        )
+        return
+    }
 
     val originalAlign = paint.textAlign
     paint.textAlign = Paint.Align.LEFT
 
-    val groupWidth = fullTextWidth + badgeGap + badgeWidth
     val textX = when (alignment) {
         TextAlignmentOption.LEFT -> left
         TextAlignmentOption.CENTER -> left + (availableWidth - groupWidth) / 2f
@@ -586,6 +663,47 @@ private fun drawTitleText(
         typeface = typeface
     )
     canvas.restore()
+    paint.textAlign = originalAlign
+}
+
+private fun drawMarqueeTitleWithBadge(
+    canvas: Canvas,
+    text: String,
+    paint: Paint,
+    left: Float,
+    right: Float,
+    baselineY: Float,
+    textWidth: Float,
+    badgeGap: Float,
+    badgeWidth: Float,
+    badgeSize: Float,
+    typeface: Typeface,
+    marqueeElapsedMs: Long
+) {
+    val originalAlign = paint.textAlign
+    paint.textAlign = Paint.Align.LEFT
+    val groupWidth = textWidth + badgeGap + badgeWidth
+    val gap = max(paint.textSize * 3.2f, (right - left) * 0.36f)
+    val cycleWidth = groupWidth + gap
+    val offset = marqueeOffset(marqueeElapsedMs, cycleWidth)
+    val leadingSpace = marqueeLeadingSpace(paint)
+    val top = baselineY - paint.textSize * 1.3f
+    val bottom = baselineY + paint.textSize * 0.45f
+
+    drawWithEdgeFade(canvas, left, top, right, bottom) {
+        var x = left + leadingSpace - offset
+        repeat(3) {
+            canvas.drawText(text, x, baselineY, paint)
+            drawExplicitBadge(
+                canvas = canvas,
+                centerX = x + textWidth + badgeGap + badgeWidth / 2f,
+                centerY = baselineY - paint.textSize * 0.34f,
+                size = badgeSize,
+                typeface = typeface
+            )
+            x += cycleWidth
+        }
+    }
     paint.textAlign = originalAlign
 }
 
@@ -624,7 +742,8 @@ private fun drawSmartText(
     right: Float,
     baselineY: Float,
     alignment: TextAlignmentOption,
-    rightPadding: Float = 0f
+    rightPadding: Float = 0f,
+    marqueeElapsedMs: Long = 0L
 ) {
     val availableWidth = (right - left - rightPadding).coerceAtLeast(1f)
     val trimmed = text.trim()
@@ -633,6 +752,22 @@ private fun drawSmartText(
     val originalAlign = paint.textAlign
     paint.textAlign = Paint.Align.LEFT
     val textWidth = paint.measureText(trimmed)
+
+    if (marqueeElapsedMs > 0L && textWidth > availableWidth) {
+        drawMarqueePlainText(
+            canvas = canvas,
+            text = trimmed,
+            paint = paint,
+            left = left,
+            right = left + availableWidth,
+            baselineY = baselineY,
+            textWidth = textWidth,
+            marqueeElapsedMs = marqueeElapsedMs
+        )
+        paint.textAlign = originalAlign
+        return
+    }
+
     val drawX = when (alignment) {
         TextAlignmentOption.LEFT -> left
         TextAlignmentOption.CENTER -> left + (availableWidth - textWidth) / 2f
@@ -643,6 +778,82 @@ private fun drawSmartText(
     canvas.drawText(trimmed, drawX, baselineY, paint)
     canvas.restore()
     paint.textAlign = originalAlign
+}
+
+private fun drawMarqueePlainText(
+    canvas: Canvas,
+    text: String,
+    paint: Paint,
+    left: Float,
+    right: Float,
+    baselineY: Float,
+    textWidth: Float,
+    marqueeElapsedMs: Long
+) {
+    val gap = max(paint.textSize * 3.2f, (right - left) * 0.36f)
+    val cycleWidth = textWidth + gap
+    val offset = marqueeOffset(marqueeElapsedMs, cycleWidth)
+    val leadingSpace = marqueeLeadingSpace(paint)
+    val top = baselineY - paint.textSize * 1.3f
+    val bottom = baselineY + paint.textSize * 0.45f
+
+    drawWithEdgeFade(canvas, left, top, right, bottom) {
+        var x = left + leadingSpace - offset
+        repeat(3) {
+            canvas.drawText(text, x, baselineY, paint)
+            x += cycleWidth
+        }
+    }
+}
+
+private fun drawWithEdgeFade(
+    canvas: Canvas,
+    left: Float,
+    top: Float,
+    right: Float,
+    bottom: Float,
+    drawContent: () -> Unit
+) {
+    val checkpoint = canvas.saveLayer(left, top, right, bottom, null)
+    drawContent()
+    val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        shader = LinearGradient(
+            left,
+            0f,
+            right,
+            0f,
+            intArrayOf(
+                AndroidColor.TRANSPARENT,
+                AndroidColor.BLACK,
+                AndroidColor.BLACK,
+                AndroidColor.TRANSPARENT
+            ),
+            floatArrayOf(0f, 0.08f, 0.92f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+    }
+    canvas.drawRect(left, top, right, bottom, maskPaint)
+    maskPaint.xfermode = null
+    canvas.restoreToCount(checkpoint)
+}
+
+private fun marqueeOffset(marqueeElapsedMs: Long, cycleWidth: Float): Float {
+    if (cycleWidth <= 0f) return 0f
+    val activeElapsedMs = (marqueeElapsedMs - LOCKSCREEN_MARQUEE_START_DELAY_MS).coerceAtLeast(0L)
+    val traveled = activeElapsedMs / 1000f * LOCKSCREEN_MARQUEE_PX_PER_SECOND
+    return traveled % cycleWidth
+}
+
+private fun marqueeLeadingSpace(paint: Paint): Float {
+    return paint.measureText("000")
+}
+
+private fun titleVisualWidth(text: String, isExplicit: Boolean, paint: Paint): Float {
+    val trimmed = text.trim()
+    if (trimmed.isBlank()) return 0f
+    if (!isExplicit) return paint.measureText(trimmed)
+    return paint.measureText(trimmed) + paint.textSize * 0.26f + paint.textSize * 0.78f
 }
 
 private data class BlobSpec(
@@ -749,9 +960,9 @@ private fun extractPalette(bitmap: Bitmap, anchors: List<PaletteAnchor>): List<I
     }
     val selectedPalette = mutableListOf<Int>()
 
-    anchors.forEach { anchor ->
+    anchors.forEachIndexed { index, anchor ->
         dominantColorForAnchor(sampledBitmap, anchor)?.let { color ->
-            selectedPalette += color
+            selectedPalette += normalizeAnchorColor(color, index)
         }
     }
 
@@ -790,11 +1001,27 @@ private fun fallbackPalette(): List<Int> {
 
 private fun neutralDarkPalette(): List<Int> {
     return listOf(
-        AndroidColor.rgb(16, 16, 16),
-        AndroidColor.rgb(23, 23, 23),
-        AndroidColor.rgb(34, 34, 34),
-        AndroidColor.rgb(43, 43, 43)
+        AndroidColor.rgb(18, 18, 18),
+        AndroidColor.rgb(24, 24, 24),
+        AndroidColor.rgb(31, 31, 31),
+        AndroidColor.rgb(40, 40, 40)
     )
+}
+
+private fun neutralDarkAnchorColor(index: Int): Int {
+    return when (index.coerceIn(0, 2)) {
+        0 -> AndroidColor.rgb(18, 18, 18)
+        1 -> AndroidColor.rgb(24, 24, 24)
+        else -> AndroidColor.rgb(31, 31, 31)
+    }
+}
+
+private fun normalizeAnchorColor(color: Int, index: Int): Int {
+    return if (isNearBlackNeutral(color)) {
+        neutralDarkAnchorColor(index)
+    } else {
+        color
+    }
 }
 
 private fun dominantColorForAnchor(
@@ -915,7 +1142,7 @@ private fun colorUsability(color: Int): Float {
 private fun isNearBlackNeutral(color: Int): Boolean {
     val hsv = FloatArray(3)
     AndroidColor.colorToHSV(color, hsv)
-    return hsv[2] <= 0.16f && hsv[1] <= 0.18f
+    return hsv[2] <= 0.09f || (hsv[2] <= 0.16f && hsv[1] <= 0.18f)
 }
 
 private fun minColorDistance(color: Int, selected: List<Int>): Float {

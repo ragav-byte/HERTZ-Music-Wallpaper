@@ -72,6 +72,7 @@ data class PlaybackUiState(
     val gradientAnchor3X: Float = 0.90f,
     val gradientAnchor3Y: Float = 0.88f,
     val preserveArtworkOnReboot: Boolean = false,
+    val lockscreenMarqueeEnabled: Boolean = true,
     val batteryPercent: Int = 100,
     val cardsDisabledForBattery: Boolean = false,
     val textAlignment: TextAlignmentOption = TextAlignmentOption.CENTER,
@@ -157,6 +158,7 @@ object PlaybackRepository {
     private const val KEY_GRADIENT_ANCHOR_3_X = "gradient_anchor_3_x"
     private const val KEY_GRADIENT_ANCHOR_3_Y = "gradient_anchor_3_y"
     private const val KEY_PRESERVE_ARTWORK_ON_REBOOT = "preserve_artwork_on_reboot"
+    private const val KEY_LOCKSCREEN_MARQUEE_ENABLED = "lockscreen_marquee_enabled"
     private const val KEY_TEXT_ALIGNMENT = "text_alignment"
     private const val DURATION_CACHE_PREFIX = "duration_cache_"
     private const val APPLE_MUSIC_PACKAGE = "com.apple.android.music"
@@ -173,7 +175,28 @@ object PlaybackRepository {
         "com.opera.browser",
         "com.opera.mini.native",
         "com.duckduckgo.mobile.android",
-        "com.google.android.youtube"
+        "com.google.android.youtube",
+        "com.linkedin.android",
+        "com.linkedin.learning",
+        "com.linkedin.android.learning",
+        "com.apple.atve.androidtv.appletv",
+        "com.apple.atve.sony.appletv",
+        "in.startv.hotstar",
+        "com.jio.hotstar",
+        "com.jio.media.ondemand",
+        "com.amazon.avod.thirdpartyclient",
+        "com.amazon.amazonvideo.livingroom",
+        "com.netflix.mediaclient",
+        "com.disney.disneyplus",
+        "com.hulu.plus",
+        "com.wbd.stream",
+        "com.peacocktv.peacockandroid",
+        "com.cbs.app",
+        "com.graymatrix.did",
+        "com.sonyliv",
+        "com.sonyliv.android",
+        "com.mxtech.videoplayer.ad",
+        "com.mxtech.videoplayer.pro"
     )
     private const val NEW_TRACK_POSITION_GRACE_MS = 5_000L
     private const val SAME_TRACK_RESTART_WINDOW_MS = 2_500L
@@ -249,6 +272,7 @@ object PlaybackRepository {
             gradientAnchor3Y = prefs.getFloat(KEY_GRADIENT_ANCHOR_3_Y, GradientAnchorPreset.SPATIAL.point3Y)
                 .coerceIn(0f, 1f),
             preserveArtworkOnReboot = preserveArtworkOnReboot,
+            lockscreenMarqueeEnabled = prefs.getBoolean(KEY_LOCKSCREEN_MARQUEE_ENABLED, true),
             textAlignment = prefs.getString(KEY_TEXT_ALIGNMENT, TextAlignmentOption.CENTER.name)
                 ?.let { runCatching { TextAlignmentOption.valueOf(it) }.getOrNull() }
                 ?: TextAlignmentOption.CENTER
@@ -482,6 +506,13 @@ object PlaybackRepository {
         persistLayout()
     }
 
+    fun setLockscreenMarqueeEnabled(enabled: Boolean) {
+        mutableUiState.update { state ->
+            state.copy(lockscreenMarqueeEnabled = enabled)
+        }
+        persistLayout()
+    }
+
     fun setTextAlignment(alignment: TextAlignmentOption) {
         mutableUiState.update { state ->
             state.copy(textAlignment = alignment)
@@ -518,6 +549,7 @@ object PlaybackRepository {
                 gradientAnchor3X = GradientAnchorPreset.SPATIAL.point3X,
                 gradientAnchor3Y = GradientAnchorPreset.SPATIAL.point3Y,
                 preserveArtworkOnReboot = false,
+                lockscreenMarqueeEnabled = true,
                 textAlignment = TextAlignmentOption.CENTER
             )
         }
@@ -1124,6 +1156,7 @@ object PlaybackRepository {
             .putFloat(KEY_GRADIENT_ANCHOR_3_X, state.gradientAnchor3X)
             .putFloat(KEY_GRADIENT_ANCHOR_3_Y, state.gradientAnchor3Y)
             .putBoolean(KEY_PRESERVE_ARTWORK_ON_REBOOT, state.preserveArtworkOnReboot)
+            .putBoolean(KEY_LOCKSCREEN_MARQUEE_ENABLED, state.lockscreenMarqueeEnabled)
             .putString(KEY_TEXT_ALIGNMENT, state.textAlignment.name)
             .apply()
     }
