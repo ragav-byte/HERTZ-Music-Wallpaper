@@ -66,6 +66,7 @@ class MusicCanvasWallpaperService : WallpaperService() {
                     }
                     Intent.ACTION_USER_PRESENT -> {
                         surfaceMode = WallpaperSurfaceMode.HOME
+                        PlaybackRepository.refreshCurrentPlayback()
                     }
                 }
                 restartRendering()

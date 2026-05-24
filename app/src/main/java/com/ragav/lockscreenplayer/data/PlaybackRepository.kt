@@ -720,12 +720,6 @@ object PlaybackRepository {
             ArtworkCache.storeAsync(cacheKeys, immediateArtwork)
         }
         val memoryArtwork = ArtworkCache.getMemorySync(cacheKeys)
-        requestArtworkLoad(
-            signature = signature,
-            cacheKeys = cacheKeys,
-            uri = artworkUri,
-            fallbackBitmap = metadataArtwork
-        )
         val explicit = inferExplicitFlag(
             title = trackTitle,
             metadata = metadata,
@@ -820,6 +814,12 @@ object PlaybackRepository {
                 marqueeStartedAtMs = if (signatureChanged || state.marqueeStartedAtMs == 0L) now else state.marqueeStartedAtMs
             )
         }
+        requestArtworkLoad(
+            signature = signature,
+            cacheKeys = cacheKeys,
+            uri = artworkUri,
+            fallbackBitmap = metadataArtwork
+        )
     }
 
     fun shouldShowCard(state: PlaybackUiState = uiState.value): Boolean {

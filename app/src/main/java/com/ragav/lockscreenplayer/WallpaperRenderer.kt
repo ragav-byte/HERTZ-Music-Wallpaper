@@ -15,6 +15,7 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.os.SystemClock
+import android.util.LruCache
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import com.ragav.lockscreenplayer.data.PlaybackRepository
@@ -28,6 +29,7 @@ import kotlin.math.sqrt
 
 private const val LOCKSCREEN_MARQUEE_START_DELAY_MS = 2_000L
 private const val LOCKSCREEN_MARQUEE_PX_PER_SECOND = 88f
+private const val MAX_PROCESSED_BACKGROUND_CACHE_BYTES = 48 * 1024 * 1024
 
 object LiveWallpaperRenderer {
     private data class BackgroundCacheKey(
@@ -46,13 +48,9 @@ object LiveWallpaperRenderer {
         val anchor3YBucket: Int
     )
 
-    private data class BackgroundCache(
-        val key: BackgroundCacheKey,
-        val bitmap: Bitmap
-    )
-
-    @Volatile
-    private var backgroundCache: BackgroundCache? = null
+    private val backgroundCache = object : LruCache<BackgroundCacheKey, Bitmap>(MAX_PROCESSED_BACKGROUND_CACHE_BYTES) {
+        override fun sizeOf(key: BackgroundCacheKey, value: Bitmap): Int = value.byteCount
+    }
 
     fun render(
         context: Context,
@@ -84,9 +82,9 @@ object LiveWallpaperRenderer {
             anchor3XBucket = (state.gradientAnchor3X.coerceIn(0f, 1f) * 1000f).toInt(),
             anchor3YBucket = (state.gradientAnchor3Y.coerceIn(0f, 1f) * 1000f).toInt()
         )
-        val background = backgroundCache
-            ?.takeIf { it.key == backgroundKey }
-            ?.bitmap
+        val background = synchronized(backgroundCache) {
+            backgroundCache.get(backgroundKey)
+        }
             ?: createBackground(
                 sourceArtwork = sourceArtwork,
                 width = safeWidth,
@@ -95,7 +93,9 @@ object LiveWallpaperRenderer {
                 gradientBrightness = gradientBrightness,
                 blurAmount = state.blurAmount
             ).also { generated ->
-                backgroundCache = BackgroundCache(backgroundKey, generated)
+                synchronized(backgroundCache) {
+                    backgroundCache.put(backgroundKey, generated)
+                }
             }
         if (!drawCards) {
             return background
