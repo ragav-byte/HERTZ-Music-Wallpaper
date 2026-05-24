@@ -64,11 +64,13 @@ Browser and video-player sessions such as Chrome, Brave, and YouTube are filtere
 
 HERTZ is optimized for cache-first updates, especially when the phone wakes from the lock screen.
 
-- Repeated song already in memory cache: about `0.1s-0.4s`
-- Repeated song loaded from local disk cache: about `0.4s-1.2s`
-- New song when Android exposes artwork quickly: usually within about `1.5s`
-- New song with remote artwork or slower metadata publishing: commonly `1s-3s`
-- Worst case when the music app delays artwork metadata: can still take up to about `5s`
+| Scenario | Expected time | What happens |
+| --- | --- | --- |
+| Repeated song already in memory cache | `0.1s-0.4s` | Artwork and metadata can appear almost instantly from memory. |
+| Repeated song loaded from local disk cache | `0.4s-1.2s` | HERTZ restores resized artwork from local storage without waiting for a remote fetch. |
+| New song when Android exposes artwork quickly | About `1.5s` | Title, artist, timeline, and artwork usually settle quickly. |
+| New song with remote artwork or slower metadata publishing | Commonly `1s-3s` | Text can update first while higher-quality artwork finishes loading. |
+| Worst case when the music app delays artwork metadata | Up to about `5s` | HERTZ must wait for Android or the music app to publish usable artwork. |
 
 Song title, artist, timeline, and playback state are applied before slower artwork loading finishes, so the wallpaper can feel responsive even while high-quality artwork is still being prepared.
 
