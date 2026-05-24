@@ -107,6 +107,11 @@ enum class GradientAnchorPreset(
     }
 }
 
+enum class PlaybackRefreshMode {
+    NORMAL,
+    WAKE_CACHE_FIRST
+}
+
 object PlaybackRepository {
     val CARD_PAUSE_HOLD_OPTIONS_MS = listOf(0L, 5_000L, 10_000L, 20_000L, 30_000L, 60_000L, 300_000L, 600_000L)
     private const val CARD_STEP = 0.12f
@@ -214,6 +219,8 @@ object PlaybackRepository {
     private var batteryReceiverRegistered = false
     @Volatile
     private var activeArtworkRequestKey: String? = null
+    @Volatile
+    private var activeDiskPrewarmKey: String? = null
     private val badArtworkRequestKeys = linkedSetOf<String>()
 
     private val batteryReceiver = object : BroadcastReceiver() {
@@ -308,8 +315,8 @@ object PlaybackRepository {
         syncFromController(safeController)
     }
 
-    fun refreshCurrentPlayback() {
-        syncFromController(currentController)
+    fun refreshCurrentPlayback(mode: PlaybackRefreshMode = PlaybackRefreshMode.NORMAL) {
+        syncFromController(currentController, mode)
     }
 
     fun refreshBatteryState() {
@@ -648,9 +655,12 @@ object PlaybackRepository {
         }
     }
 
-    private fun syncFromController(controller: MediaController?) {
+    private fun syncFromController(
+        controller: MediaController?,
+        mode: PlaybackRefreshMode = PlaybackRefreshMode.NORMAL
+    ) {
         runCatching {
-            syncFromControllerSafely(controller)
+            syncFromControllerSafely(controller, mode)
         }.onFailure {
             activeArtworkRequestKey = null
             mutableUiState.update { state ->
@@ -664,7 +674,10 @@ object PlaybackRepository {
         }
     }
 
-    private fun syncFromControllerSafely(controller: MediaController?) {
+    private fun syncFromControllerSafely(
+        controller: MediaController?,
+        mode: PlaybackRefreshMode
+    ) {
         if (controller == null) {
             mutableUiState.update { state ->
                 state.copy(
@@ -720,6 +733,17 @@ object PlaybackRepository {
             ArtworkCache.storeAsync(cacheKeys, immediateArtwork)
         }
         val memoryArtwork = ArtworkCache.getMemorySync(cacheKeys)
+        val shouldUseDiskPrewarm = mode == PlaybackRefreshMode.WAKE_CACHE_FIRST &&
+            memoryArtwork == null &&
+            immediateArtwork == null
+        if (shouldUseDiskPrewarm) {
+            prewarmCachedArtworkFromDisk(
+                signature = signature,
+                cacheKeys = cacheKeys,
+                uri = artworkUri,
+                fallbackBitmap = metadataArtwork
+            )
+        }
         val explicit = inferExplicitFlag(
             title = trackTitle,
             metadata = metadata,
@@ -814,12 +838,16 @@ object PlaybackRepository {
                 marqueeStartedAtMs = if (signatureChanged || state.marqueeStartedAtMs == 0L) now else state.marqueeStartedAtMs
             )
         }
-        requestArtworkLoad(
-            signature = signature,
-            cacheKeys = cacheKeys,
-            uri = artworkUri,
-            fallbackBitmap = metadataArtwork
-        )
+        val hasCachedArtwork = memoryArtwork != null || immediateArtwork != null
+        val shouldSkipRemoteArtwork = mode == PlaybackRefreshMode.WAKE_CACHE_FIRST && hasCachedArtwork
+        if (!shouldSkipRemoteArtwork && !shouldUseDiskPrewarm) {
+            requestArtworkLoad(
+                signature = signature,
+                cacheKeys = cacheKeys,
+                uri = artworkUri,
+                fallbackBitmap = metadataArtwork
+            )
+        }
     }
 
     fun shouldShowCard(state: PlaybackUiState = uiState.value): Boolean {
@@ -891,31 +919,64 @@ object PlaybackRepository {
 
             if (loadedArtwork != null) {
                 ArtworkCache.storeAsync(cacheKeys, loadedArtwork)
-                mutableUiState.update { state ->
-                    if (state.trackSignature != signature) {
-                        state
-                    } else {
-                        val chosenArtwork = if (state.artworkSignature == signature) {
-                            chooseSessionArtwork(state.artworkBitmap, loadedArtwork)
-                        } else {
-                            loadedArtwork
-                        }
-                        if (chosenArtwork === state.artworkBitmap && state.artworkSignature == signature) {
-                            state
-                        } else {
-                            state.copy(
-                                artworkBitmap = chosenArtwork,
-                                artworkSignature = signature
-                            )
-                        }
-                    }
-                }
+                applyLoadedArtwork(signature, loadedArtwork)
             } else {
                 rememberBadArtworkRequest(requestKey)
             }
 
             if (activeArtworkRequestKey == requestKey) {
                 activeArtworkRequestKey = null
+            }
+        }
+    }
+
+    private fun prewarmCachedArtworkFromDisk(
+        signature: String,
+        cacheKeys: List<String>,
+        uri: String?,
+        fallbackBitmap: Bitmap?
+    ) {
+        if (signature.isBlank() || activeDiskPrewarmKey == signature) return
+        activeDiskPrewarmKey = signature
+        artworkScope.launch {
+            try {
+                val cachedArtwork = runCatching { ArtworkCache.getSync(cacheKeys) }.getOrNull()
+                if (cachedArtwork != null) {
+                    applyLoadedArtwork(signature, cachedArtwork)
+                } else {
+                    requestArtworkLoad(
+                        signature = signature,
+                        cacheKeys = cacheKeys,
+                        uri = uri,
+                        fallbackBitmap = fallbackBitmap
+                    )
+                }
+            } finally {
+                if (activeDiskPrewarmKey == signature) {
+                    activeDiskPrewarmKey = null
+                }
+            }
+        }
+    }
+
+    private fun applyLoadedArtwork(signature: String, loadedArtwork: Bitmap) {
+        mutableUiState.update { state ->
+            if (state.trackSignature != signature) {
+                state
+            } else {
+                val chosenArtwork = if (state.artworkSignature == signature) {
+                    chooseSessionArtwork(state.artworkBitmap, loadedArtwork)
+                } else {
+                    loadedArtwork
+                }
+                if (chosenArtwork === state.artworkBitmap && state.artworkSignature == signature) {
+                    state
+                } else {
+                    state.copy(
+                        artworkBitmap = chosenArtwork,
+                        artworkSignature = signature
+                    )
+                }
             }
         }
     }

@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.view.Choreographer
 import android.view.SurfaceHolder
+import com.ragav.lockscreenplayer.data.PlaybackRefreshMode
 import com.ragav.lockscreenplayer.data.PlaybackRepository
 import com.ragav.lockscreenplayer.data.PlaybackUiState
 import kotlinx.coroutines.CoroutineScope
@@ -39,6 +40,24 @@ class MusicCanvasWallpaperService : WallpaperService() {
         HOME
     }
 
+    private data class RenderSnapshotKey(
+        val width: Int,
+        val height: Int,
+        val surfaceMode: WallpaperSurfaceMode,
+        val drawCards: Boolean,
+        val title: String,
+        val artist: String,
+        val album: String,
+        val sourcePackage: String,
+        val isExplicit: Boolean,
+        val isPlaying: Boolean,
+        val durationMs: Long,
+        val pausedPositionMs: Long,
+        val artworkSignature: String,
+        val trackSignature: String,
+        val layoutFingerprint: Int
+    )
+
     inner class MusicCanvasEngine : Engine() {
         private val keyguardManager by lazy {
             getSystemService(KEYGUARD_SERVICE) as KeyguardManager
@@ -50,6 +69,7 @@ class MusicCanvasWallpaperService : WallpaperService() {
         private var surfaceWidth = 0
         private var surfaceHeight = 0
         private var animationJob: Job? = null
+        private var lastImmediateRenderKey: RenderSnapshotKey? = null
         private var screenOn = true
         private var surfaceStateReceiverRegistered = false
         private val surfaceStateReceiver = object : BroadcastReceiver() {
@@ -62,11 +82,11 @@ class MusicCanvasWallpaperService : WallpaperService() {
                     Intent.ACTION_SCREEN_ON -> {
                         screenOn = true
                         surfaceMode = WallpaperSurfaceMode.LOCK
-                        PlaybackRepository.refreshCurrentPlayback()
+                        PlaybackRepository.refreshCurrentPlayback(PlaybackRefreshMode.WAKE_CACHE_FIRST)
                     }
                     Intent.ACTION_USER_PRESENT -> {
                         surfaceMode = WallpaperSurfaceMode.HOME
-                        PlaybackRepository.refreshCurrentPlayback()
+                        PlaybackRepository.refreshCurrentPlayback(PlaybackRefreshMode.WAKE_CACHE_FIRST)
                     }
                 }
                 restartRendering()
@@ -93,6 +113,9 @@ class MusicCanvasWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(visible: Boolean) {
             super.onVisibilityChanged(visible)
             isVisibleOnScreen = visible
+            if (!visible) {
+                lastImmediateRenderKey = null
+            }
             if (visible) {
                 surfaceMode = if (keyguardManager.isKeyguardLocked) {
                     WallpaperSurfaceMode.LOCK
@@ -112,6 +135,7 @@ class MusicCanvasWallpaperService : WallpaperService() {
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder) {
             isVisibleOnScreen = false
+            lastImmediateRenderKey = null
             animationJob?.cancel()
             super.onSurfaceDestroyed(holder)
         }
@@ -131,12 +155,19 @@ class MusicCanvasWallpaperService : WallpaperService() {
                 val marqueeStartedAtMs = SystemClock.elapsedRealtime()
                 var lastMarqueeRenderAtMs = 0L
                 var shouldMarquee = shouldTickMarquee(drawCards)
-                renderFrame(drawCards, marqueeElapsedMs = if (shouldMarquee) 1L else 0L)
+                val shouldProgress = shouldTickProgress(drawCards)
+                val initialRenderKey = renderSnapshotKey(drawCards)
+                if (shouldMarquee || shouldProgress || initialRenderKey != lastImmediateRenderKey) {
+                    renderFrame(drawCards, marqueeElapsedMs = if (shouldMarquee) 1L else 0L)
+                    if (!shouldMarquee && !shouldProgress) {
+                        lastImmediateRenderKey = initialRenderKey
+                    }
+                }
 
                 while (isActive && isVisibleOnScreen && screenOn) {
                     shouldMarquee = shouldTickMarquee(drawCards)
-                    val shouldProgress = shouldTickProgress(drawCards)
-                    if (!shouldMarquee && !shouldProgress) break
+                    val shouldProgressTick = shouldTickProgress(drawCards)
+                    if (!shouldMarquee && !shouldProgressTick) break
 
                     val elapsedSinceMarqueeStart = SystemClock.elapsedRealtime() - marqueeStartedAtMs
                     if (shouldMarquee && elapsedSinceMarqueeStart >= MARQUEE_START_DELAY_MS) {
@@ -205,6 +236,58 @@ class MusicCanvasWallpaperService : WallpaperService() {
                     height = surfaceHeight,
                     drawCards = drawCards
                 )
+        }
+
+        private fun renderSnapshotKey(drawCards: Boolean): RenderSnapshotKey {
+            val state = latestState
+            val layoutFingerprint = listOf(
+                state.cardOffsetX,
+                state.cardOffsetY,
+                state.cardScale,
+                state.playerCardWidthScale,
+                state.playerCardOffsetY,
+                state.cardCornerRadius,
+                state.playerCardFrost,
+                state.showCardOnLockScreen,
+                state.showCardOnHomeScreen,
+                state.cardPauseHoldMs,
+                state.textOffsetX,
+                state.textOffsetY,
+                state.titleTextScale,
+                state.artistTextScale,
+                state.blurAmount,
+                state.fluidScale,
+                state.fluidity,
+                state.gradientBrightness,
+                state.gradientAnchorPreset,
+                state.gradientAnchor1X,
+                state.gradientAnchor1Y,
+                state.gradientAnchor2X,
+                state.gradientAnchor2Y,
+                state.gradientAnchor3X,
+                state.gradientAnchor3Y,
+                state.preserveArtworkOnReboot,
+                state.lockscreenMarqueeEnabled,
+                state.cardsDisabledForBattery,
+                state.textAlignment
+            ).hashCode()
+            return RenderSnapshotKey(
+                width = surfaceWidth,
+                height = surfaceHeight,
+                surfaceMode = surfaceMode,
+                drawCards = drawCards,
+                title = state.title,
+                artist = state.artist,
+                album = state.album,
+                sourcePackage = state.sourcePackage,
+                isExplicit = state.isExplicit,
+                isPlaying = state.isPlaying,
+                durationMs = state.durationMs,
+                pausedPositionMs = if (state.isPlaying) -1L else state.positionMs,
+                artworkSignature = state.artworkSignature,
+                trackSignature = state.trackSignature,
+                layoutFingerprint = layoutFingerprint
+            )
         }
 
         private suspend fun renderFrame(drawCards: Boolean, marqueeElapsedMs: Long = 0L) {

@@ -60,6 +60,18 @@ If a music player publishes a remote artwork URI, HERTZ may download that artwor
 
 Browser and video-player sessions such as Chrome, Brave, and YouTube are filtered out so normal web/video playback does not take over the wallpaper experience.
 
+## Expected Loading Times
+
+HERTZ is optimized for cache-first updates, especially when the phone wakes from the lock screen.
+
+- Repeated song already in memory cache: about `0.1s-0.4s`
+- Repeated song loaded from local disk cache: about `0.4s-1.2s`
+- New song when Android exposes artwork quickly: usually within about `1.5s`
+- New song with remote artwork or slower metadata publishing: commonly `1s-3s`
+- Worst case when the music app delays artwork metadata: can still take up to about `5s`
+
+Song title, artist, timeline, and playback state are applied before slower artwork loading finishes, so the wallpaper can feel responsive even while high-quality artwork is still being prepared.
+
 ## Gradient Color Picking
 
 HERTZ samples the current cover art to build the wallpaper background.
@@ -129,7 +141,8 @@ Release APK path after building:
 ## Notice
 
 - HERTZ is newly developed and still being tested.
-- Brand-new songs can have a delay of about 5 seconds before artwork appears, depending on how quickly Android and the music app publish metadata.
+- Brand-new songs are commonly visible within about 1.5 seconds when Android and the music app publish metadata quickly.
+- Some songs can still take up to about 5 seconds before artwork appears if the music app delays artwork metadata.
 - Repeated songs should usually load faster because of the local cache.
 - Music cards do not show at 20% battery or below to protect battery life and reduce heat.
 - Some Android phones handle live wallpapers differently, so lock-screen-only and home-screen behavior may vary by device.
