@@ -11,6 +11,7 @@ release-signing.properties
 captures/
 *.iml
 *.apk
+!downloads/HERTZ-Music-Wallpaper-v1.0-release.apk
 *.ap_
 *.aab
 *.keystore

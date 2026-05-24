@@ -27,7 +27,7 @@ Swipe sideways to see the full gallery.
 
 ## Download APK
 
-[Download the latest release APK](https://github.com/ragav-byte/HERTZ-Music-Wallpaper/raw/main/playstore_apk/HERTZ-Music-Wallpaper-v1.0-release.apk)
+[Download the latest release APK](https://github.com/ragav-byte/HERTZ-Music-Wallpaper/raw/main/downloads/HERTZ-Music-Wallpaper-v1.0-release.apk)
 
 This signed release APK is included for testing before the broader app-store release.
 
@@ -136,7 +136,7 @@ No account login, remote analytics, or cloud sync is required for the core wallp
 
 Release APK path after building:
 
-`playstore_apk/HERTZ-Music-Wallpaper-v1.0-release.apk`
+`downloads/HERTZ-Music-Wallpaper-v1.0-release.apk`
 
 ## Notice
 
